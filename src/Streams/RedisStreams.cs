@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Snail.Toolkit.Redis.PubSub;
@@ -12,13 +13,14 @@ namespace Snail.Toolkit.Redis.Streams;
 /// StackExchange.Redis multiplexes one connection and therefore never blocks on XREAD, so following a stream means
 /// reading again when something arrived. The announcement makes that immediate; the poll interval is the safety net.
 /// </remarks>
-internal sealed class RedisStreams(
+internal sealed partial class RedisStreams(
     IRedisConnection connection,
     IRedisPubSub pubSub,
     IOptions<RedisStreamOptions> options,
     ILogger<RedisStreams> logger) : IRedisStream
 {
     private const string Start = "0-0";
+    private const string OnlyNew = "$";
     private static readonly RedisValue DataField = "data";
 
     private readonly RedisStreamOptions _options = options.Value;
@@ -41,6 +43,11 @@ internal sealed class RedisStreams(
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// "$" is accepted as the Redis idiom for "only what comes next": XREAD refuses it without BLOCK, so it is turned
+    /// into the id of the last entry before the first read. Any other id is checked up front, because a malformed one
+    /// would otherwise surface as a server error from inside the follow loop.
+    /// </remarks>
     public async IAsyncEnumerable<RedisStreamEntry<T>> ReadAsync<T>(
         string stream,
         string? after = null,
@@ -48,9 +55,12 @@ internal sealed class RedisStreams(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
 
+        if (after is not null && after != OnlyNew && !EntryId().IsMatch(after))
+            throw new ArgumentException($"'{after}' is not a stream entry id; expected '<milliseconds>-<sequence>' or '$'.", nameof(after));
+
         await using var announcements = await pubSub.SubscribeAsync<string>(Announcements(stream), cancellationToken).ConfigureAwait(false);
         await using var arrivals = announcements.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
-        var position = after ?? Start;
+        var position = after == OnlyNew ? await LastIdAsync(stream).ConfigureAwait(false) : after ?? Start;
         Task<bool>? arrival = null;
 
         try
@@ -65,8 +75,8 @@ internal sealed class RedisStreams(
                     {
                         position = entry.Id.ToString();
 
-                        if (Read<T>(stream, entry) is { } message)
-                            yield return new RedisStreamEntry<T>(position, message);
+                        if (Read<T>(stream, entry) is { } read)
+                            yield return read;
                     }
 
                     continue;
@@ -92,23 +102,35 @@ internal sealed class RedisStreams(
         }
     }
 
+    [GeneratedRegex(@"^\d+-\d+$")]
+    private static partial Regex EntryId();
+
     private static string Announcements(string stream) => $"stream:{stream}:appended";
 
-    private T? Read<T>(string stream, StreamEntry entry)
+    private async Task<string> LastIdAsync(string stream)
+    {
+        var last = await Database.StreamRangeAsync(stream, "-", "+", count: 1, messageOrder: Order.Descending).ConfigureAwait(false);
+
+        return last.Length == 0 ? Start : last[0].Id.ToString();
+    }
+
+    private RedisStreamEntry<T>? Read<T>(string stream, StreamEntry entry)
     {
         var data = entry.Values.FirstOrDefault(value => value.Name == DataField).Value;
 
         if (data.IsNullOrEmpty)
-            return default;
+            return null;
 
         try
         {
-            return JsonPayload.Read<T>((byte[])data!, _json);
+            var message = JsonPayload.Read<T>((byte[])data!, _json);
+
+            return message is null ? null : new RedisStreamEntry<T>(entry.Id.ToString(), message);
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
         {
             logger.SkippedUnreadableEntry(exception, stream, entry.Id.ToString(), typeof(T).Name);
-            return default;
+            return null;
         }
     }
 }

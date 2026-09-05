@@ -211,8 +211,10 @@ public static class ServiceCollectionExtensions
     private static bool ParsedPassword(string? connection) =>
         !string.IsNullOrWhiteSpace(connection) && Parses(connection) && ConfigurationOptions.Parse(connection).Password is not null;
 
+    /// <remarks>StackExchange.Redis trims the name on each side of the equals sign, so the check has to see "abortConnect = true" as well.</remarks>
     private static bool Mentions(string? connection, string keyword) =>
         connection is not null && connection
-            .Split(',', StringSplitOptions.TrimEntries)
-            .Any(token => token.StartsWith($"{keyword}=", StringComparison.OrdinalIgnoreCase));
+            .Split(',')
+            .Select(token => token.Split('=', 2)[0].Trim())
+            .Any(name => name.Equals(keyword, StringComparison.OrdinalIgnoreCase));
 }

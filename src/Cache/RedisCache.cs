@@ -20,6 +20,7 @@ internal sealed class RedisCache(
     ILogger<RedisCache> logger) : IRedisCache
 {
     private const long None = -1;
+    private static readonly long DateTimeOffsetMaxTicks = DateTimeOffset.MaxValue.Ticks;
     private static readonly RedisValue AbsoluteField = "absexp";
     private static readonly RedisValue SlidingField = "sldexp";
     private static readonly RedisValue DataField = "data";
@@ -28,7 +29,7 @@ internal sealed class RedisCache(
     private readonly string _prefix = redis.Value.InstanceName ?? string.Empty;
     private readonly RedisCacheOptions _options = options.Value;
     private readonly JsonSerializerOptions _json = JsonPayload.Prepared(options.Value.Json);
-    private readonly ConcurrentDictionary<string, Lazy<Task<object?>>> _flights = new();
+    private readonly ConcurrentDictionary<(string Key, Type Type), Lazy<Task<object?>>> _flights = new();
     private readonly LogThrottle _throttle = new(TimeSpan.FromMinutes(1));
 
     private IDatabase Database => connection.Multiplexer.GetDatabase();
@@ -36,7 +37,8 @@ internal sealed class RedisCache(
     /// <inheritdoc />
     /// <remarks>
     /// An entry that no longer deserializes, typically after a deploy changed the shape of the type, would otherwise
-    /// fail every reader until its expiry. It is evicted and reported as a miss so the factory rebuilds it.
+    /// fail every reader until its expiry. It is evicted and reported as a miss so the factory rebuilds it. A type the
+    /// serializer cannot handle at all fails with NotSupportedException rather than JsonException and counts the same.
     /// </remarks>
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : class
     {
@@ -54,6 +56,13 @@ internal sealed class RedisCache(
             ReportUnavailable(exception, key);
             return null;
         }
+        catch (RedisServerException exception) when (IsWrongType(exception))
+        {
+            RedisMetrics.CacheMisses.Add(1);
+            logger.EvictedUnreadableEntry(exception, key, typeof(T).Name);
+            await RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
 
         if (fields[2].IsNull)
         {
@@ -69,7 +78,7 @@ internal sealed class RedisCache(
             RedisMetrics.CacheHits.Add(1);
             return value;
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
         {
             RedisMetrics.CacheMisses.Add(1);
             logger.EvictedUnreadableEntry(exception, key, typeof(T).Name);
@@ -92,7 +101,7 @@ internal sealed class RedisCache(
         if (cached is not null)
             return cached;
 
-        var flight = _flights.GetOrAdd(key, _ => new Lazy<Task<object?>>(() => LoadAsync(key, factory, options, cancellationToken)));
+        var flight = _flights.GetOrAdd((key, typeof(T)), _ => new Lazy<Task<object?>>(() => LoadAsync(key, factory, options, cancellationToken)));
 
         try
         {
@@ -104,7 +113,7 @@ internal sealed class RedisCache(
         }
         finally
         {
-            _flights.TryRemove(new KeyValuePair<string, Lazy<Task<object?>>>(key, flight));
+            _flights.TryRemove(new KeyValuePair<(string, Type), Lazy<Task<object?>>>((key, typeof(T)), flight));
         }
     }
 
@@ -169,6 +178,10 @@ internal sealed class RedisCache(
 
     private RedisKey Prefixed(string key) => _prefix + key;
 
+    /// <remarks>A value of another type under the cache's own prefix is somebody else's mistake; it is evicted like any entry the cache cannot read.</remarks>
+    private static bool IsWrongType(RedisServerException exception) =>
+        exception.Message.StartsWith("WRONGTYPE", StringComparison.Ordinal);
+
     private bool Misses(Exception exception) =>
         exception is RedisConnectionException or RedisTimeoutException && _options.OnFailure is CacheFailure.Miss;
 
@@ -182,6 +195,7 @@ internal sealed class RedisCache(
         return (absolute, options.SlidingExpiration);
     }
 
+    /// <remarks>Metadata written by another client is not trusted: an absolute expiry outside the DateTimeOffset range is ignored rather than thrown.</remarks>
     private void Refresh(string key, RedisValue absolute, RedisValue sliding)
     {
         if (!sliding.TryParse(out long slidingTicks) || slidingTicks <= 0)
@@ -189,7 +203,7 @@ internal sealed class RedisCache(
 
         var timeToLive = TimeSpan.FromTicks(slidingTicks);
 
-        if (absolute.TryParse(out long absoluteTicks) && absoluteTicks > 0)
+        if (absolute.TryParse(out long absoluteTicks) && absoluteTicks > 0 && absoluteTicks <= DateTimeOffsetMaxTicks)
         {
             var remaining = new DateTimeOffset(absoluteTicks, TimeSpan.Zero) - DateTimeOffset.UtcNow;
             timeToLive = remaining < timeToLive ? remaining : timeToLive;
