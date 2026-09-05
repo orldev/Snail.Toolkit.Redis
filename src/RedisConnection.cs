@@ -15,6 +15,7 @@ namespace Snail.Toolkit.Redis;
 internal sealed class RedisConnection : IRedisConnection, IDisposable
 {
     private static readonly TimeSpan ReplacementGrace = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan RetryBackoff = TimeSpan.FromSeconds(5);
 
     private readonly IOptionsFactory<RedisOptions> _factory;
     private readonly ILogger<RedisConnection> _logger;
@@ -22,6 +23,8 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private ConfigurationOptions _configuration;
     private IConnectionMultiplexer? _multiplexer;
+    private Exception? _lastFailure;
+    private long _failedAt;
 
     /// <remarks>
     /// Reloads are watched through the change token sources rather than <see cref="IOptionsMonitor{TOptions}"/>:
@@ -64,7 +67,20 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
 
         try
         {
-            return _multiplexer ??= Observed(await ConnectionMultiplexer.ConnectAsync(_configuration).ConfigureAwait(false));
+            if (_multiplexer is { } opened)
+                return opened;
+
+            ThrowIfRecentlyRefused();
+
+            try
+            {
+                return _multiplexer = Observed(await ConnectionMultiplexer.ConnectAsync(_configuration).ConfigureAwait(false));
+            }
+            catch (RedisConnectionException exception)
+            {
+                Refused(exception);
+                throw;
+            }
         }
         finally
         {
@@ -81,18 +97,52 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
         _gate.Dispose();
     }
 
+    /// <remarks>
+    /// With AbortOnConnectFail a refused connect throws instead of returning a reconnecting multiplexer, and every
+    /// caller would repeat the blocking attempt; a refusal is therefore remembered for the back-off.
+    /// </remarks>
     private IConnectionMultiplexer Connect()
     {
         _gate.Wait();
 
         try
         {
-            return _multiplexer ??= Observed(ConnectionMultiplexer.Connect(_configuration));
+            if (_multiplexer is { } opened)
+                return opened;
+
+            ThrowIfRecentlyRefused();
+
+            try
+            {
+                return _multiplexer = Observed(ConnectionMultiplexer.Connect(_configuration));
+            }
+            catch (RedisConnectionException exception)
+            {
+                Refused(exception);
+                throw;
+            }
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private void ThrowIfRecentlyRefused()
+    {
+        if (_lastFailure is not { } failure || Environment.TickCount64 - _failedAt >= RetryBackoff.TotalMilliseconds)
+            return;
+
+        throw new RedisConnectionException(
+            ConnectionFailureType.UnableToConnect,
+            $"Redis refused the connection less than {RetryBackoff.TotalSeconds:F0} seconds ago; the next attempt waits for the back-off.",
+            failure);
+    }
+
+    private void Refused(Exception exception)
+    {
+        _lastFailure = exception;
+        _failedAt = Environment.TickCount64;
     }
 
     private IConnectionMultiplexer Observed(IConnectionMultiplexer multiplexer)
@@ -139,12 +189,20 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
         _logger.PasswordRotated();
     }
 
+    /// <remarks>A container disposed while the replacement is in flight disposes the gate as well; that is the end of the connection, not an error.</remarks>
     private async Task ReplaceAsync(ConfigurationOptions next)
     {
         IConnectionMultiplexer? previous;
         IConnectionMultiplexer replacement;
 
-        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
 
         try
         {

@@ -19,9 +19,11 @@ internal sealed class ChannelFeed<T> : IChannelFeed
     private readonly ILogger _logger;
     private readonly Action<ChannelFeed<T>> _closed;
     private readonly Lock _gate = new();
-    private RedisSubscription<T>[] _readers = [];
+    private readonly HashSet<RedisSubscription<T>> _readers = [];
+    private RedisSubscription<T>[] _snapshot = [];
     private ChannelMessageQueue? _queue;
     private Task? _opening;
+    private int _generation;
     private bool _isClosed;
 
     public ChannelFeed(RedisChannel channel, IConnectionMultiplexer connection, RedisPubSubOptions options, ILogger logger, Action<ChannelFeed<T>> closed)
@@ -43,7 +45,8 @@ internal sealed class ChannelFeed<T> : IChannelFeed
             if (_isClosed)
                 return false;
 
-            _readers = [.. _readers, reader];
+            _readers.Add(reader);
+            _snapshot = [.. _readers];
             return true;
         }
     }
@@ -53,12 +56,13 @@ internal sealed class ChannelFeed<T> : IChannelFeed
         Task opening;
 
         lock (_gate)
-            opening = _opening ??= OpenCoreAsync();
+            opening = _opening ??= OpenCoreAsync(_generation);
 
         return opening.WaitAsync(cancellationToken);
     }
 
     /// <summary>Subscribes again on the replacement connection; readers keep their buffers and miss only what was published in between.</summary>
+    /// <remarks>Each open carries a generation: an older open that completes after a newer one releases its queue instead of recording it.</remarks>
     public async Task ReopenAsync(IConnectionMultiplexer connection)
     {
         Task opening;
@@ -69,7 +73,7 @@ internal sealed class ChannelFeed<T> : IChannelFeed
                 return;
 
             _connection = connection;
-            opening = _opening = OpenCoreAsync();
+            opening = _opening = OpenCoreAsync(++_generation);
         }
 
         try
@@ -86,9 +90,10 @@ internal sealed class ChannelFeed<T> : IChannelFeed
     {
         lock (_gate)
         {
-            _readers = [.. _readers.Where(attached => attached != reader)];
+            _readers.Remove(reader);
+            _snapshot = [.. _readers];
 
-            if (_readers.Length > 0 || _isClosed)
+            if (_readers.Count > 0 || _isClosed)
                 return;
 
             _isClosed = true;
@@ -98,13 +103,13 @@ internal sealed class ChannelFeed<T> : IChannelFeed
         await UnsubscribeAsync().ConfigureAwait(false);
     }
 
-    private async Task OpenCoreAsync()
+    private async Task OpenCoreAsync(int generation)
     {
+        ChannelMessageQueue queue;
+
         try
         {
-            var queue = await _connection.GetSubscriber().SubscribeAsync(_channel).ConfigureAwait(false);
-            queue.OnMessage(OnMessage);
-            _queue = queue;
+            queue = await _connection.GetSubscriber().SubscribeAsync(_channel).ConfigureAwait(false);
         }
         catch
         {
@@ -114,13 +119,41 @@ internal sealed class ChannelFeed<T> : IChannelFeed
             {
                 _isClosed = true;
                 _closed(this);
-                readers = _readers;
+                readers = _snapshot;
             }
 
             foreach (var reader in readers)
                 reader.Complete();
 
             throw;
+        }
+
+        bool isCurrent;
+
+        lock (_gate)
+        {
+            isCurrent = generation == _generation && !_isClosed;
+
+            if (isCurrent)
+            {
+                queue.OnMessage(OnMessage);
+                _queue = queue;
+            }
+        }
+
+        if (!isCurrent)
+            await ReleaseAsync(queue).ConfigureAwait(false);
+    }
+
+    private async Task ReleaseAsync(ChannelMessageQueue queue)
+    {
+        try
+        {
+            await queue.UnsubscribeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is ObjectDisposedException or RedisException)
+        {
+            _logger.ReleasedAfterClose(exception, Channel);
         }
     }
 
@@ -143,14 +176,8 @@ internal sealed class ChannelFeed<T> : IChannelFeed
             return;
         }
 
-        try
-        {
-            await _queue!.UnsubscribeAsync().ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is ObjectDisposedException or RedisException)
-        {
-            _logger.ReleasedAfterClose(exception, Channel);
-        }
+        if (_queue is { } queue)
+            await ReleaseAsync(queue).ConfigureAwait(false);
     }
 
     private void OnMessage(ChannelMessage message)
@@ -164,7 +191,7 @@ internal sealed class ChannelFeed<T> : IChannelFeed
         {
             value = JsonPayload.Read<T>((byte[])message.Message!, _json);
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
         {
             _logger.DroppedUnreadableMessage(exception, message.Channel.ToString(), typeof(T).Name);
             return;
@@ -176,7 +203,7 @@ internal sealed class ChannelFeed<T> : IChannelFeed
         RedisMetrics.Received.Add(1);
         var received = new RedisMessage<T>(_channel.IsPattern ? message.Channel.ToString() : Channel, value);
 
-        foreach (var reader in Volatile.Read(ref _readers))
+        foreach (var reader in Volatile.Read(ref _snapshot))
             reader.Offer(received);
     }
 }
