@@ -1,29 +1,26 @@
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
-using StackExchange.Redis;
 
 namespace Snail.Toolkit.Redis.PubSub;
 
-/// <summary>Buffers a StackExchange.Redis message queue into a bounded channel of deserialized messages.</summary>
+/// <summary>A reader attached to a <see cref="ChannelFeed{T}"/>, buffering its messages in a bounded channel.</summary>
 internal sealed class RedisSubscription<T> : IRedisSubscription<T>
 {
     private const int DropLogInterval = 1000;
 
-    private readonly ChannelMessageQueue _queue;
+    private readonly ChannelFeed<T> _feed;
     private readonly Channel<RedisMessage<T>> _buffer;
-    private readonly JsonSerializerOptions _json;
     private readonly ILogger _logger;
+    private readonly int _capacity;
     private long _dropped;
     private int _disposed;
 
-    public RedisSubscription(ChannelMessageQueue queue, RedisPubSubOptions options, ILogger logger)
+    public RedisSubscription(ChannelFeed<T> feed, RedisPubSubOptions options, ILogger logger)
     {
-        _queue = queue;
-        _json = options.Json;
+        _feed = feed;
         _logger = logger;
-        Channel = queue.Channel.ToString();
+        _capacity = options.BufferCapacity;
         _buffer = System.Threading.Channels.Channel.CreateBounded<RedisMessage<T>>(
             new BoundedChannelOptions(options.BufferCapacity)
             {
@@ -32,12 +29,14 @@ internal sealed class RedisSubscription<T> : IRedisSubscription<T>
                 FullMode = BoundedChannelFullMode.DropOldest
             },
             OnDropped);
-
-        queue.OnMessage(OnMessage);
     }
 
     /// <inheritdoc />
-    public string Channel { get; }
+    public string Channel => _feed.Channel;
+
+    public void Offer(RedisMessage<T> message) => _buffer.Writer.TryWrite(message);
+
+    public void Complete() => _buffer.Writer.TryComplete();
 
     /// <inheritdoc />
     public async IAsyncEnumerable<RedisMessage<T>> ReadAllAsync(
@@ -51,13 +50,17 @@ internal sealed class RedisSubscription<T> : IRedisSubscription<T>
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The buffer completes before the feed is told, so a pending reader is released even when the multiplexer is
+    /// already gone, as it is during host shutdown; the feed's unsubscribe cannot fail anything that still matters.
+    /// </remarks>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1)
             return;
 
-        await _queue.UnsubscribeAsync().ConfigureAwait(false);
         _buffer.Writer.TryComplete();
+        await _feed.DetachAsync(this).ConfigureAwait(false);
     }
 
     private async ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken)
@@ -72,36 +75,12 @@ internal sealed class RedisSubscription<T> : IRedisSubscription<T>
         }
     }
 
-    private void OnMessage(ChannelMessage message)
-    {
-        if (message.Message.IsNullOrEmpty)
-            return;
-
-        T? value;
-
-        try
-        {
-            value = JsonSerializer.Deserialize<T>((byte[])message.Message!, _json);
-        }
-        catch (JsonException exception)
-        {
-            _logger.LogWarning(exception,
-                "Dropped a message from channel {Channel} that could not be deserialized as {Type}",
-                message.Channel.ToString(), typeof(T).Name);
-            return;
-        }
-
-        if (value is not null)
-            _buffer.Writer.TryWrite(new RedisMessage<T>(message.Channel.ToString(), value));
-    }
-
     private void OnDropped(RedisMessage<T> dropped)
     {
         var count = Interlocked.Increment(ref _dropped);
+        RedisMetrics.Dropped.Add(1);
 
         if (count == 1 || count % DropLogInterval == 0)
-            _logger.LogWarning(
-                "Subscriber of {Channel} is too slow: {Dropped} message(s) dropped so far, buffer capacity {Capacity}",
-                Channel, count, _buffer.Reader.CanCount ? _buffer.Reader.Count : -1);
+            _logger.SubscriberTooSlow(Channel, count, _capacity);
     }
 }

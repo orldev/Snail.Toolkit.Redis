@@ -1,11 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
 using Snail.Toolkit.Redis.Extensions;
 using StackExchange.Redis;
 
 namespace Snail.Toolkit.Redis.Tests;
 
-/// <summary>Uses its own container: the password is changed on the server during the test.</summary>
+/// <summary>Uses its own container: the password is changed on the server during the test. The host is started so the asynchronous connect path is the one under test.</summary>
 public class RedisRotationTests(RedisContainerFixture fixture) : IClassFixture<RedisContainerFixture>
 {
     [IntegrationFact]
@@ -25,6 +26,8 @@ public class RedisRotationTests(RedisContainerFixture fixture) : IClassFixture<R
             .AddLogging()
             .AddRedisHealthCheck(configuration)
             .BuildServiceProvider();
+        foreach (var hosted in provider.GetServices<IHostedService>())
+            await hosted.StartAsync(CancellationToken.None);
         var connection = provider.GetRequiredService<IConnectionMultiplexer>();
         var clientBefore = await connection.GetDatabase().ExecuteAsync("CLIENT", "ID");
         Assert.True(connection.IsConnected);

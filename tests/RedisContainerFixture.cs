@@ -6,6 +6,7 @@ namespace Snail.Toolkit.Redis.Tests;
 public sealed class RedisContainerFixture : IAsyncLifetime
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly List<RedisContainer> _others = [];
     private RedisContainer? _container;
 
     public async Task<string> GetConnectionStringAsync()
@@ -27,11 +28,26 @@ public sealed class RedisContainerFixture : IAsyncLifetime
         }
     }
 
+    /// <summary>Starts a separate server for tests that move the connection between endpoints.</summary>
+    public async Task<string> StartAnotherAsync()
+    {
+        var container = new RedisBuilder("redis:7-alpine").Build();
+        await container.StartAsync();
+
+        lock (_others)
+            _others.Add(container);
+
+        return container.GetConnectionString();
+    }
+
     public Task InitializeAsync() => Task.CompletedTask;
 
     public async Task DisposeAsync()
     {
         if (_container is not null)
             await _container.DisposeAsync();
+
+        foreach (var other in _others)
+            await other.DisposeAsync();
     }
 }
