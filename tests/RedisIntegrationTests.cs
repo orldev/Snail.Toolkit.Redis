@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
@@ -28,7 +30,7 @@ public class RedisIntegrationTests(RedisContainerFixture fixture) : IClassFixtur
     public async Task Cache_SetAndGet_RoundTrips()
     {
         await using var provider = await BuildProviderAsync();
-        var cache = provider.GetRequiredService<ICacheService>();
+        var cache = provider.GetRequiredService<IRedisCache>();
         var key = Guid.NewGuid().ToString();
 
         await cache.SetAsync(key, new Message("hello", 1));
@@ -44,15 +46,57 @@ public class RedisIntegrationTests(RedisContainerFixture fixture) : IClassFixtur
     public async Task Cache_GetWithFactory_StoresValueUnderInstanceName()
     {
         await using var provider = await BuildProviderAsync();
-        var cache = provider.GetRequiredService<ICacheService>();
+        var cache = provider.GetRequiredService<IRedisCache>();
         var connection = provider.GetRequiredService<IConnectionMultiplexer>();
         var key = Guid.NewGuid().ToString();
 
-        var value = await cache.GetAsync(key, _ => Task.FromResult(new Message("factory", 2)));
+        var value = await cache.GetAsync(key, _ => Task.FromResult<Message?>(new Message("factory", 2)));
 
         Assert.Equal(new Message("factory", 2), value);
         Assert.True(await connection.GetDatabase().KeyExistsAsync("tests:" + key));
         Assert.Equal(new Message("factory", 2), await cache.GetAsync<Message>(key));
+    }
+
+    [IntegrationFact]
+    public async Task Cache_SlidingEntry_ExpiresWhenNotRead()
+    {
+        await using var provider = await BuildProviderAsync();
+        var cache = provider.GetRequiredService<IRedisCache>();
+        var key = Guid.NewGuid().ToString();
+
+        await cache.SetAsync(key, new Message("short", 1), new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromMilliseconds(300) });
+        await Task.Delay(150);
+        Assert.NotNull(await cache.GetAsync<Message>(key));
+        await Task.Delay(500);
+
+        Assert.Null(await cache.GetAsync<Message>(key));
+    }
+
+    [IntegrationFact]
+    public async Task DistributedCache_EntriesAreReadableThroughRedisCacheAndItsDisposalKeepsTheSharedConnection()
+    {
+        var configuration = TestConfiguration.Get(await fixture.GetConnectionStringAsync(), password: null, instanceName: "tests:");
+        await using var provider = new ServiceCollection()
+            .AddLogging()
+            .AddRedisCache(configuration)
+            .AddRedisDistributedCache(configuration)
+            .BuildServiceProvider();
+        var distributed = provider.GetRequiredService<IDistributedCache>();
+        var cache = provider.GetRequiredService<IRedisCache>();
+        var key = Guid.NewGuid().ToString();
+
+        await distributed.SetAsync(key,
+            JsonSerializer.SerializeToUtf8Bytes(new Message("shared", 5), JsonSerializerOptions.Web),
+            new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(1) });
+        await cache.SetAsync(key + ":back", new Message("back", 6));
+
+        Assert.Equal(new Message("shared", 5), await cache.GetAsync<Message>(key));
+        Assert.Equal(new Message("back", 6), JsonSerializer.Deserialize<Message>((await distributed.GetAsync(key + ":back"))!, JsonSerializerOptions.Web));
+
+        (distributed as IDisposable)?.Dispose();
+
+        Assert.True(provider.GetRequiredService<IConnectionMultiplexer>().IsConnected);
+        Assert.Equal(new Message("shared", 5), await cache.GetAsync<Message>(key));
     }
 
     [IntegrationFact]
@@ -82,6 +126,29 @@ public class RedisIntegrationTests(RedisContainerFixture fixture) : IClassFixtur
         await consumer;
 
         Assert.Equal([1, 2, 3], received.Select(m => m.Number));
+        await WaitForSubscribersAsync(connection, channel, expected: 0);
+    }
+
+    [IntegrationFact]
+    public async Task PubSub_TwoReadersOfOneChannel_ShareOneRedisSubscription()
+    {
+        await using var provider = await BuildProviderAsync();
+        var pubSub = provider.GetRequiredService<IRedisPubSub>();
+        var connection = provider.GetRequiredService<IConnectionMultiplexer>();
+        var channel = "task:" + Guid.NewGuid();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var first = await pubSub.SubscribeAsync<Message>(channel, cts.Token);
+        var second = await pubSub.SubscribeAsync<Message>(channel, cts.Token);
+        await WaitForSubscribersAsync(connection, channel, expected: 1);
+        await pubSub.PublishAsync(channel, new Message("both", 1), cts.Token);
+
+        Assert.Equal(1, (await FirstAsync(first.ReadAllAsync(cts.Token))).Message.Number);
+        Assert.Equal(1, (await FirstAsync(second.ReadAllAsync(cts.Token))).Message.Number);
+
+        await first.DisposeAsync();
+        await WaitForSubscribersAsync(connection, channel, expected: 1);
+        await second.DisposeAsync();
         await WaitForSubscribersAsync(connection, channel, expected: 0);
     }
 
@@ -143,13 +210,25 @@ public class RedisIntegrationTests(RedisContainerFixture fixture) : IClassFixtur
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var subscription = await pubSub.SubscribeAsync<Message>(channel, cts.Token);
-        await pubSub.PublishAsync(channel, new Message("first", 1), cts.Token);
+        var receivers = await pubSub.PublishAsync(channel, new Message("first", 1), cts.Token);
 
         var received = await FirstAsync(subscription.ReadAllAsync(cts.Token));
 
+        Assert.Equal(1, receivers);
         Assert.Equal(channel, subscription.Channel);
         Assert.Equal(channel, received.Channel);
         Assert.Equal(new Message("first", 1), received.Message);
+    }
+
+    [IntegrationFact]
+    public async Task PubSub_PublishWithoutSubscribers_ReportsZeroReceivers()
+    {
+        await using var provider = await BuildProviderAsync();
+        var pubSub = provider.GetRequiredService<IRedisPubSub>();
+
+        var receivers = await pubSub.PublishAsync("task:" + Guid.NewGuid(), new Message("nobody", 0));
+
+        Assert.Equal(0, receivers);
     }
 
     [IntegrationFact]
@@ -199,6 +278,26 @@ public class RedisIntegrationTests(RedisContainerFixture fixture) : IClassFixtur
 
         Assert.Equal(0, await reader.WaitAsync(TimeSpan.FromSeconds(10)));
         await WaitForSubscribersAsync(connection, channel, expected: 0);
+    }
+
+    [IntegrationFact]
+    public async Task PubSub_DisposeSubscriptionAfterConnectionClosed_CompletesReaderWithoutThrowing()
+    {
+        var provider = await BuildProviderAsync();
+        var pubSub = provider.GetRequiredService<IRedisPubSub>();
+        var subscription = await pubSub.SubscribeAsync<Message>("task:" + Guid.NewGuid());
+        var reader = Task.Run(async () =>
+        {
+            var count = 0;
+            await foreach (var _ in subscription.ReadAllAsync())
+                count++;
+            return count;
+        });
+
+        await provider.DisposeAsync();
+        await subscription.DisposeAsync();
+
+        Assert.Equal(0, await reader.WaitAsync(TimeSpan.FromSeconds(10)));
     }
 
     [IntegrationFact]

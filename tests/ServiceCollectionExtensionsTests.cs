@@ -1,10 +1,8 @@
 using Microsoft.Extensions.Caching.Distributed;
-using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Snail.Toolkit.Redis.Cache;
@@ -21,9 +19,20 @@ public class ServiceCollectionExtensionsTests
     {
         var services = new ServiceCollection().AddRedisCache(TestConfiguration.Get());
 
-        Assert.Contains(services, d => d.ServiceType == typeof(ICacheService));
-        Assert.Contains(services, d => d.ServiceType == typeof(IDistributedCache));
+        Assert.Contains(services, d => d.ServiceType == typeof(IRedisCache));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IDistributedCache));
         Assert.Contains(services, d => d.ServiceType == typeof(IConnectionMultiplexer));
+    }
+
+    [Fact]
+    public void AddRedisDistributedCache_CalledTwice_RegistersMicrosoftCacheOnce()
+    {
+        var services = new ServiceCollection()
+            .AddRedisDistributedCache(TestConfiguration.Get())
+            .AddRedisDistributedCache(TestConfiguration.Get());
+
+        Assert.Single(services, d => d.ServiceType == typeof(IDistributedCache));
+        Assert.Single(services, d => d.ServiceType == typeof(IConnectionMultiplexer));
     }
 
     [Fact]
@@ -44,7 +53,7 @@ public class ServiceCollectionExtensionsTests
 
         Assert.Single(services, d => d.ServiceType == typeof(IConnectionMultiplexer));
         Assert.Single(services, d => d.ServiceType == typeof(IHostedService));
-        Assert.Single(services, d => d.ServiceType == typeof(ICacheService));
+        Assert.Single(services, d => d.ServiceType == typeof(IRedisCache));
         Assert.Single(services, d => d.ServiceType == typeof(IRedisPubSub));
     }
 
@@ -66,22 +75,52 @@ public class ServiceCollectionExtensionsTests
         Assert.Single(services, d => d.ServiceType == typeof(IConnectionMultiplexer));
     }
 
-    [Fact]
-    public async Task PublishAsync_NullMessage_Throws()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("   ")]
+    [InlineData("localhost:6379,bogus=1")]
+    [InlineData("localhost:6379,password=secret")]
+    [InlineData("localhost:6379,abortConnect=true")]
+    public void AddRedis_WithInvalidConnection_FailsValidation(string? connection)
     {
-        var pubSub = new RedisPubSub(Mock.Of<IConnectionMultiplexer>(), Options.Create(new RedisPubSubOptions()), NullLogger<RedisPubSub>.Instance);
+        using var provider = new ServiceCollection()
+            .AddRedis(TestConfiguration.Get(connection))
+            .BuildServiceProvider();
 
-        await Assert.ThrowsAsync<ArgumentNullException>(() => pubSub.PublishAsync<object>("channel", null!));
-        await Assert.ThrowsAsync<ArgumentException>(() => pubSub.PublishAsync(" ", new object()));
-        await Assert.ThrowsAsync<ArgumentException>(() => pubSub.SubscribeAsync<object>(""));
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<RedisOptions>>().Value);
     }
 
     [Fact]
-    public void AddRedis_WithoutConnection_Throws()
+    public void AddRedis_CalledTwice_KeepsTheFirstConfiguration()
     {
-        var services = new ServiceCollection();
+        var services = new ServiceCollection()
+            .AddRedis(TestConfiguration.Get("host-a:6379"))
+            .AddRedis(TestConfiguration.Get("host-b:6379"));
 
-        Assert.Throws<InvalidOperationException>(() => services.AddRedis(TestConfiguration.Get(connection: null)));
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Equal("host-a:6379", provider.GetRequiredService<IOptions<RedisOptions>>().Value.Connection);
+        Assert.Single(services, d => d.ServiceType == typeof(IConnectionMultiplexer));
+    }
+
+    [Fact]
+    public void AddRedisPubSub_WithZeroBuffer_FailsValidation()
+    {
+        using var provider = new ServiceCollection()
+            .AddRedisPubSub(TestConfiguration.Get(), o => o.BufferCapacity = 0)
+            .BuildServiceProvider();
+
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<RedisPubSubOptions>>().Value);
+    }
+
+    [Fact]
+    public void AddRedisCache_WithNegativeExpiration_FailsValidation()
+    {
+        using var provider = new ServiceCollection()
+            .AddRedisCache(TestConfiguration.Get(), o => o.SlidingExpiration = TimeSpan.FromSeconds(-1))
+            .BuildServiceProvider();
+
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<RedisCacheOptions>>().Value);
     }
 
     [Fact]
@@ -105,7 +144,7 @@ public class ServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public async Task Resolve_CacheAndPubSub_UseSharedConnection()
+    public void Resolve_CacheAndPubSub_UseSharedConnection()
     {
         var connection = Mock.Of<IConnectionMultiplexer>();
         var configuration = TestConfiguration.Get(instanceName: "app");
@@ -117,16 +156,10 @@ public class ServiceCollectionExtensionsTests
 
         using var provider = services.BuildServiceProvider();
 
-        Assert.NotNull(provider.GetRequiredService<ICacheService>());
+        Assert.NotNull(provider.GetRequiredService<IRedisCache>());
         Assert.NotNull(provider.GetRequiredService<IRedisPubSub>());
         Assert.Same(connection, provider.GetRequiredService<IConnectionMultiplexer>());
-
-        var cacheOptions = provider.GetRequiredService<IOptions<RedisCacheOptions>>().Value;
-        Assert.Equal("app", cacheOptions.InstanceName);
-        Assert.NotNull(cacheOptions.ConnectionMultiplexerFactory);
-        Assert.Same(connection, await cacheOptions.ConnectionMultiplexerFactory!());
-
         Assert.Equal(8, provider.GetRequiredService<IOptions<RedisPubSubOptions>>().Value.BufferCapacity);
-        Assert.Equal(TimeSpan.FromMinutes(5), provider.GetRequiredService<IOptions<CacheServiceOptions>>().Value.SlidingExpiration);
+        Assert.Equal(TimeSpan.FromMinutes(5), provider.GetRequiredService<IOptions<RedisCacheOptions>>().Value.SlidingExpiration);
     }
 }

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -6,24 +7,35 @@ using StackExchange.Redis;
 
 namespace Snail.Toolkit.Redis.PubSub;
 
-/// <summary><see cref="IRedisPubSub"/> over the shared <see cref="IConnectionMultiplexer"/> with System.Text.Json payloads.</summary>
-public sealed class RedisPubSub(
-    IConnectionMultiplexer connection,
-    IOptions<RedisPubSubOptions> options,
-    ILogger<RedisPubSub> logger) : IRedisPubSub
+/// <summary><see cref="IRedisPubSub"/> over the shared connection with System.Text.Json payloads.</summary>
+internal sealed class RedisPubSub : IRedisPubSub
 {
-    private readonly RedisPubSubOptions _options = options.Value;
+    private readonly IRedisConnection _connection;
+    private readonly ILogger<RedisPubSub> _logger;
+    private readonly RedisPubSubOptions _options;
+    private readonly JsonSerializerOptions _json;
+    private readonly ConcurrentDictionary<(RedisChannel Channel, Type Type), IChannelFeed> _feeds = new();
+
+    public RedisPubSub(IRedisConnection connection, IOptions<RedisPubSubOptions> options, ILogger<RedisPubSub> logger)
+    {
+        _connection = connection;
+        _logger = logger;
+        _options = options.Value;
+        _json = JsonPayload.Prepared(_options.Json);
+        connection.Replaced += OnReplaced;
+    }
 
     /// <inheritdoc />
-    public Task PublishAsync<T>(string channel, T message, CancellationToken cancellationToken = default)
+    public Task<long> PublishAsync<T>(string channel, T message, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
         ArgumentNullException.ThrowIfNull(message);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var payload = JsonSerializer.SerializeToUtf8Bytes(message, _options.Json);
+        var payload = JsonPayload.Write(message, _json);
+        RedisMetrics.Published.Add(1);
 
-        return connection.GetSubscriber().PublishAsync(RedisChannel.Literal(channel), payload, CommandFlags.FireAndForget);
+        return _connection.Multiplexer.GetSubscriber().PublishAsync(RedisChannel.Literal(channel), payload);
     }
 
     /// <inheritdoc />
@@ -62,8 +74,33 @@ public sealed class RedisPubSub(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var queue = await connection.GetSubscriber().SubscribeAsync(channel).ConfigureAwait(false);
+        while (true)
+        {
+            var feed = (ChannelFeed<T>)_feeds.GetOrAdd(
+                (channel, typeof(T)),
+                key => new ChannelFeed<T>(channel, _connection.Multiplexer, _options, _logger, closed => _feeds.TryRemove(new(key, closed))));
+            var reader = new RedisSubscription<T>(feed, _options, _logger);
 
-        return new RedisSubscription<T>(queue, _options, logger);
+            if (!feed.TryAttach(reader))
+                continue;
+
+            try
+            {
+                await feed.OpenAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                await reader.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+
+            return reader;
+        }
+    }
+
+    private void OnReplaced(IConnectionMultiplexer multiplexer)
+    {
+        foreach (var feed in _feeds.Values)
+            _ = feed.ReopenAsync(multiplexer);
     }
 }

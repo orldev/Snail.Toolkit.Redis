@@ -4,16 +4,18 @@ using StackExchange.Redis;
 namespace Snail.Toolkit.Redis.Health;
 
 /// <summary>Reports the shared Redis connection as healthy when a PING succeeds.</summary>
-internal sealed class RedisHealthCheck(IConnectionMultiplexer connection) : IHealthCheck
+internal sealed class RedisHealthCheck(IRedisConnection connection) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
         try
         {
-            if (!connection.IsConnected)
+            var multiplexer = connection.Multiplexer;
+
+            if (!multiplexer.IsConnected)
                 return new HealthCheckResult(context.Registration.FailureStatus, "Redis connection is not established");
 
-            var latency = await connection.GetDatabase().PingAsync().ConfigureAwait(false);
+            var latency = await multiplexer.GetDatabase().PingAsync().ConfigureAwait(false);
 
             return HealthCheckResult.Healthy(
                 $"PING {latency.TotalMilliseconds:F1} ms",
