@@ -33,7 +33,7 @@ public class RedisCacheCrashTests
     public RedisCacheCrashTests()
     {
         _multiplexer.Setup(c => c.GetDatabase(It.IsAny<int>(), It.IsAny<object?>())).Returns(_database.Object);
-        _connection.Setup(c => c.Multiplexer).Returns(_multiplexer.Object);
+        _connection.Setup(c => c.ConnectAsync(It.IsAny<CancellationToken>())).ReturnsAsync(_multiplexer.Object);
         _database.Setup(d => d.CreateBatch(It.IsAny<object?>())).Returns(_batch.Object);
         _batch.Setup(b => b.HashSetAsync(It.IsAny<RedisKey>(), It.IsAny<HashEntry[]>(), It.IsAny<CommandFlags>())).Returns(Task.CompletedTask);
         _batch.Setup(b => b.KeyExpireAsync(It.IsAny<RedisKey>(), It.IsAny<TimeSpan?>(), It.IsAny<ExpireWhen>(), It.IsAny<CommandFlags>())).ReturnsAsync(true);
@@ -145,7 +145,7 @@ public class RedisCacheCrashTests
     [Fact]
     public async Task GetAsync_WhenTheConnectionCannotOpen_ReportsMiss()
     {
-        _connection.Setup(c => c.Multiplexer).Throws(new RedisConnectionException(ConnectionFailureType.UnableToConnect, "refused"));
+        _connection.Setup(c => c.ConnectAsync(It.IsAny<CancellationToken>())).ThrowsAsync(new RedisConnectionException(ConnectionFailureType.UnableToConnect, "refused"));
 
         Assert.Null(await _cache.GetAsync<Payload>("key"));
         Assert.Contains(LogLevel.Warning, _logs);

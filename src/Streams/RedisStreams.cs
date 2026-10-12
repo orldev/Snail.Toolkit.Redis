@@ -26,8 +26,6 @@ internal sealed partial class RedisStreams(
     private readonly RedisStreamOptions _options = options.Value;
     private readonly JsonSerializerOptions _json = JsonPayload.Prepared(options.Value.Json);
 
-    private IDatabase Database => connection.Multiplexer.GetDatabase();
-
     /// <inheritdoc />
     public async Task<string> AppendAsync<T>(string stream, T message, int? maxLength = null, CancellationToken cancellationToken = default)
     {
@@ -36,7 +34,8 @@ internal sealed partial class RedisStreams(
         cancellationToken.ThrowIfCancellationRequested();
 
         var payload = JsonPayload.Write(message, _json);
-        var id = await Database.StreamAddAsync(stream, DataField, payload, maxLength: maxLength, useApproximateMaxLength: true).ConfigureAwait(false);
+        var database = await DatabaseAsync(cancellationToken).ConfigureAwait(false);
+        var id = await database.StreamAddAsync(stream, DataField, payload, maxLength: maxLength, useApproximateMaxLength: true).ConfigureAwait(false);
         await pubSub.PublishAsync(Announcements(stream), id.ToString(), cancellationToken).ConfigureAwait(false);
 
         return id.ToString();
@@ -60,14 +59,15 @@ internal sealed partial class RedisStreams(
 
         await using var announcements = await pubSub.SubscribeAsync<string>(Announcements(stream), cancellationToken).ConfigureAwait(false);
         await using var arrivals = announcements.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
-        var position = after == OnlyNew ? await LastIdAsync(stream).ConfigureAwait(false) : after ?? Start;
+        var position = after == OnlyNew ? await LastIdAsync(stream, cancellationToken).ConfigureAwait(false) : after ?? Start;
         Task<bool>? arrival = null;
 
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var entries = await Database.StreamReadAsync(stream, position, _options.PageSize).ConfigureAwait(false);
+                var database = await DatabaseAsync(cancellationToken).ConfigureAwait(false);
+                var entries = await database.StreamReadAsync(stream, position, _options.PageSize).ConfigureAwait(false);
 
                 if (entries.Length > 0)
                 {
@@ -107,9 +107,17 @@ internal sealed partial class RedisStreams(
 
     private static string Announcements(string stream) => $"stream:{stream}:appended";
 
-    private async Task<string> LastIdAsync(string stream)
+    private async ValueTask<IDatabase> DatabaseAsync(CancellationToken cancellationToken)
     {
-        var last = await Database.StreamRangeAsync(stream, "-", "+", count: 1, messageOrder: Order.Descending).ConfigureAwait(false);
+        var multiplexer = await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+        return multiplexer.GetDatabase();
+    }
+
+    private async Task<string> LastIdAsync(string stream, CancellationToken cancellationToken)
+    {
+        var database = await DatabaseAsync(cancellationToken).ConfigureAwait(false);
+        var last = await database.StreamRangeAsync(stream, "-", "+", count: 1, messageOrder: Order.Descending).ConfigureAwait(false);
 
         return last.Length == 0 ? Start : last[0].Id.ToString();
     }

@@ -26,6 +26,7 @@ internal sealed class RedisPubSub : IRedisPubSub
     }
 
     /// <inheritdoc />
+    /// <remarks>Once the connection is open the publish's own task is handed back, so no state machine is built around it.</remarks>
     public Task<long> PublishAsync<T>(string channel, T message, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
@@ -35,7 +36,10 @@ internal sealed class RedisPubSub : IRedisPubSub
         var payload = JsonPayload.Write(message, _json);
         RedisMetrics.Published.Add(1);
 
-        return _connection.Multiplexer.GetSubscriber().PublishAsync(RedisChannel.Literal(channel), payload);
+        if (_connection.Opened is not { } multiplexer)
+            return PublishWhenConnectedAsync(channel, payload, cancellationToken);
+
+        return multiplexer.GetSubscriber().PublishAsync(RedisChannel.Literal(channel), payload);
     }
 
     /// <inheritdoc />
@@ -76,9 +80,10 @@ internal sealed class RedisPubSub : IRedisPubSub
 
         while (true)
         {
+            var multiplexer = await _connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
             var feed = (ChannelFeed<T>)_feeds.GetOrAdd(
                 (channel, typeof(T)),
-                key => new ChannelFeed<T>(channel, _connection.Multiplexer, _options, _logger, closed => _feeds.TryRemove(new(key, closed))));
+                key => new ChannelFeed<T>(channel, multiplexer, _options, _logger, closed => _feeds.TryRemove(new(key, closed))));
             var reader = new RedisSubscription<T>(feed, _options, _logger);
 
             if (!feed.TryAttach(reader))
@@ -96,6 +101,13 @@ internal sealed class RedisPubSub : IRedisPubSub
 
             return reader;
         }
+    }
+
+    private async Task<long> PublishWhenConnectedAsync(string channel, byte[] payload, CancellationToken cancellationToken)
+    {
+        var multiplexer = await _connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+        return await multiplexer.GetSubscriber().PublishAsync(RedisChannel.Literal(channel), payload).ConfigureAwait(false);
     }
 
     private void OnReplaced(IConnectionMultiplexer multiplexer)

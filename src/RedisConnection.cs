@@ -23,6 +23,7 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private ConfigurationOptions _configuration;
     private IConnectionMultiplexer? _multiplexer;
+    private Task<IConnectionMultiplexer>? _connected;
     private Exception? _lastFailure;
     private long _failedAt;
 
@@ -52,17 +53,30 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
 
     /// <inheritdoc />
     /// <remarks>
-    /// The hosted warm-up opens the connection asynchronously at start, so the blocking path only runs for a
-    /// consumer that asks for the connection earlier, typically another hosted service registered before it.
+    /// Only the <see cref="IConnectionMultiplexer"/> registered for consumers comes this way; the library's own
+    /// components await <see cref="ConnectAsync"/>, so a Redis that does not answer holds none of their threads.
     /// </remarks>
     public IConnectionMultiplexer Multiplexer => Volatile.Read(ref _multiplexer) ?? Connect();
 
-    /// <summary>Opens the multiplexer once; concurrent callers share the same attempt.</summary>
-    public async Task<IConnectionMultiplexer> ConnectAsync(CancellationToken cancellationToken)
-    {
-        if (Volatile.Read(ref _multiplexer) is { } open)
-            return open;
+    /// <inheritdoc />
+    public IConnectionMultiplexer? Opened => Volatile.Read(ref _multiplexer);
 
+    /// <inheritdoc />
+    public Task<IConnectionMultiplexer> ConnectAsync(CancellationToken cancellationToken) =>
+        Volatile.Read(ref _connected) ?? OpenAsync(cancellationToken);
+
+    public void Dispose()
+    {
+        foreach (var subscription in _changeSubscriptions)
+            subscription.Dispose();
+
+        _multiplexer?.Dispose();
+        _gate.Dispose();
+    }
+
+    /// <summary>Opens the multiplexer once; concurrent callers share the same attempt.</summary>
+    private async Task<IConnectionMultiplexer> OpenAsync(CancellationToken cancellationToken)
+    {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
@@ -74,7 +88,7 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
 
             try
             {
-                return _multiplexer = Observed(await ConnectionMultiplexer.ConnectAsync(_configuration).ConfigureAwait(false));
+                return Hold(Observed(await ConnectionMultiplexer.ConnectAsync(_configuration).ConfigureAwait(false)));
             }
             catch (RedisConnectionException exception)
             {
@@ -86,15 +100,6 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
         {
             _gate.Release();
         }
-    }
-
-    public void Dispose()
-    {
-        foreach (var subscription in _changeSubscriptions)
-            subscription.Dispose();
-
-        _multiplexer?.Dispose();
-        _gate.Dispose();
     }
 
     /// <remarks>
@@ -114,7 +119,7 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
 
             try
             {
-                return _multiplexer = Observed(ConnectionMultiplexer.Connect(_configuration));
+                return Hold(Observed(ConnectionMultiplexer.Connect(_configuration)));
             }
             catch (RedisConnectionException exception)
             {
@@ -143,6 +148,15 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
     {
         _lastFailure = exception;
         _failedAt = Environment.TickCount64;
+    }
+
+    /// <summary>Makes the multiplexer the one in use, with the completed task <see cref="ConnectAsync"/> answers from then on.</summary>
+    private IConnectionMultiplexer Hold(IConnectionMultiplexer multiplexer)
+    {
+        Volatile.Write(ref _connected, Task.FromResult(multiplexer));
+        Volatile.Write(ref _multiplexer, multiplexer);
+
+        return multiplexer;
     }
 
     private IConnectionMultiplexer Observed(IConnectionMultiplexer multiplexer)
@@ -216,7 +230,7 @@ internal sealed class RedisConnection : IRedisConnection, IDisposable
 
             replacement = Observed(await ConnectionMultiplexer.ConnectAsync(next).ConfigureAwait(false));
             _configuration = next;
-            _multiplexer = replacement;
+            Hold(replacement);
         }
         catch (Exception exception)
         {

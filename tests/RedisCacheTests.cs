@@ -30,7 +30,7 @@ public class RedisCacheTests
         var multiplexer = new Mock<IConnectionMultiplexer>();
         multiplexer.Setup(c => c.GetDatabase(It.IsAny<int>(), It.IsAny<object?>())).Returns(_database.Object);
         var connection = new Mock<IRedisConnection>();
-        connection.Setup(c => c.Multiplexer).Returns(multiplexer.Object);
+        connection.Setup(c => c.ConnectAsync(It.IsAny<CancellationToken>())).ReturnsAsync(multiplexer.Object);
         _database.Setup(d => d.CreateBatch(It.IsAny<object?>())).Returns(_batch.Object);
         _batch.Setup(b => b.HashSetAsync(Key, It.IsAny<HashEntry[]>(), It.IsAny<CommandFlags>())).Returns(Task.CompletedTask);
         _batch.Setup(b => b.KeyExpireAsync(Key, It.IsAny<TimeSpan?>(), It.IsAny<ExpireWhen>(), It.IsAny<CommandFlags>())).ReturnsAsync(true);

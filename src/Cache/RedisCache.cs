@@ -32,8 +32,6 @@ internal sealed class RedisCache(
     private readonly ConcurrentDictionary<(string Key, Type Type), Lazy<Task<object?>>> _flights = new();
     private readonly LogThrottle _throttle = new(TimeSpan.FromMinutes(1));
 
-    private IDatabase Database => connection.Multiplexer.GetDatabase();
-
     /// <inheritdoc />
     /// <remarks>
     /// An entry that no longer deserializes, typically after a deploy changed the shape of the type, would otherwise
@@ -45,11 +43,13 @@ internal sealed class RedisCache(
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         cancellationToken.ThrowIfCancellationRequested();
 
+        IDatabase database;
         RedisValue[] fields;
 
         try
         {
-            fields = await Database.HashGetAsync(Prefixed(key), Fields).ConfigureAwait(false);
+            database = (await connection.ConnectAsync(cancellationToken).ConfigureAwait(false)).GetDatabase();
+            fields = await database.HashGetAsync(Prefixed(key), Fields).ConfigureAwait(false);
         }
         catch (Exception exception) when (Misses(exception))
         {
@@ -70,7 +70,7 @@ internal sealed class RedisCache(
             return null;
         }
 
-        Refresh(key, fields[0], fields[1]);
+        Refresh(database, key, fields[0], fields[1]);
 
         try
         {
@@ -142,7 +142,8 @@ internal sealed class RedisCache(
         try
         {
             var prefixed = Prefixed(key);
-            var batch = Database.CreateBatch();
+            var multiplexer = await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            var batch = multiplexer.GetDatabase().CreateBatch();
             var stored = batch.HashSetAsync(prefixed, entry);
             var expires = timeToLive is { } lifetime ? batch.KeyExpireAsync(prefixed, lifetime) : batch.KeyPersistAsync(prefixed);
             batch.Execute();
@@ -155,12 +156,16 @@ internal sealed class RedisCache(
     }
 
     /// <inheritdoc />
+    /// <remarks>Once the connection is open the delete's own task is handed back, so no state machine is built around it.</remarks>
     public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Database.KeyDeleteAsync(Prefixed(key));
+        if (connection.Opened is not { } multiplexer)
+            return RemoveWhenConnectedAsync(key, cancellationToken);
+
+        return multiplexer.GetDatabase().KeyDeleteAsync(Prefixed(key));
     }
 
     private static TimeSpan? TimeToLive(DateTimeOffset? absolute, TimeSpan? sliding, DateTimeOffset now)
@@ -196,7 +201,7 @@ internal sealed class RedisCache(
     }
 
     /// <remarks>Metadata written by another client is not trusted: an absolute expiry outside the DateTimeOffset range is ignored rather than thrown.</remarks>
-    private void Refresh(string key, RedisValue absolute, RedisValue sliding)
+    private void Refresh(IDatabase database, string key, RedisValue absolute, RedisValue sliding)
     {
         if (!sliding.TryParse(out long slidingTicks) || slidingTicks <= 0)
             return;
@@ -210,7 +215,7 @@ internal sealed class RedisCache(
         }
 
         if (timeToLive > TimeSpan.Zero)
-            Database.KeyExpire(Prefixed(key), timeToLive, CommandFlags.FireAndForget);
+            database.KeyExpire(Prefixed(key), timeToLive, CommandFlags.FireAndForget);
     }
 
     private void ReportUnavailable(Exception exception, string key)
@@ -219,6 +224,13 @@ internal sealed class RedisCache(
 
         if (_throttle.Allows())
             logger.CacheUnavailable(exception, key);
+    }
+
+    private async Task RemoveWhenConnectedAsync(string key, CancellationToken cancellationToken)
+    {
+        var multiplexer = await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+        await multiplexer.GetDatabase().KeyDeleteAsync(Prefixed(key)).ConfigureAwait(false);
     }
 
     private async Task<object?> LoadAsync<T>(

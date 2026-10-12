@@ -9,7 +9,7 @@ internal sealed class RedisHealthCheck(IRedisConnection connection) : IHealthChe
     {
         try
         {
-            var multiplexer = connection.Multiplexer;
+            var multiplexer = await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
             if (!multiplexer.IsConnected)
                 return new HealthCheckResult(context.Registration.FailureStatus, "Redis connection is not established");

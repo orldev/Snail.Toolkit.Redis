@@ -18,6 +18,7 @@ internal sealed class InProcessRedis : IRedisConnection
     private readonly IDatabase _database;
     private readonly ISubscriber _subscriber;
     private readonly IBatch _batch;
+    private readonly Task<IConnectionMultiplexer> _connected;
 
     public InProcessRedis(RedisValue[] hash)
     {
@@ -26,11 +27,16 @@ internal sealed class InProcessRedis : IRedisConnection
         _subscriber = Proxy<ISubscriber>();
         _batch = Proxy<IBatch>();
         Multiplexer = Proxy<IConnectionMultiplexer>();
+        _connected = Task.FromResult(Multiplexer);
     }
 
     public IConnectionMultiplexer Multiplexer { get; }
 
+    public IConnectionMultiplexer? Opened => Multiplexer;
+
     public ConfigurationOptions Configuration { get; } = new();
+
+    public Task<IConnectionMultiplexer> ConnectAsync(CancellationToken cancellationToken) => _connected;
 
     public event Action<IConnectionMultiplexer>? Replaced
     {
