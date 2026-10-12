@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="benchmarks/Snail.Toolkit.Redis.Benchmarks.csproj" />
+  <Project Path="src/Snail.Toolkit.Redis.csproj" />
+  <Project Path="tests/Snail.Toolkit.Redis.NativeProbe/Snail.Toolkit.Redis.NativeProbe.csproj" />
+  <Project Path="tests/Snail.Toolkit.Redis.Tests.csproj" />
+</Solution>

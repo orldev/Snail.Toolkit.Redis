@@ -1,0 +1,100 @@
+#nullable enable
+Snail.Toolkit.Redis.Cache.CacheFailure
+Snail.Toolkit.Redis.Cache.CacheFailure.Miss = 1 -> Snail.Toolkit.Redis.Cache.CacheFailure
+Snail.Toolkit.Redis.Cache.CacheFailure.Throw = 0 -> Snail.Toolkit.Redis.Cache.CacheFailure
+Snail.Toolkit.Redis.Cache.IRedisCache
+Snail.Toolkit.Redis.Cache.IRedisCache.GetAsync<T>(string! key, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T?>!>! factory, Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T?>!
+Snail.Toolkit.Redis.Cache.IRedisCache.GetAsync<T>(string! key, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T?>!
+Snail.Toolkit.Redis.Cache.IRedisCache.RemoveAsync(string! key, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Snail.Toolkit.Redis.Cache.IRedisCache.SetAsync<T>(string! key, T! value, Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Snail.Toolkit.Redis.Cache.RedisCacheOptions
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.AbsoluteExpirationRelativeToNow.get -> System.TimeSpan?
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.AbsoluteExpirationRelativeToNow.set -> void
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.Json.get -> System.Text.Json.JsonSerializerOptions!
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.Json.set -> void
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.OnFailure.get -> Snail.Toolkit.Redis.Cache.CacheFailure
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.OnFailure.set -> void
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.RedisCacheOptions() -> void
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.SlidingExpiration.get -> System.TimeSpan?
+Snail.Toolkit.Redis.Cache.RedisCacheOptions.SlidingExpiration.set -> void
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!)
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddRedis(Microsoft.Extensions.Configuration.IConfiguration! configuration) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddRedisCache(Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<Snail.Toolkit.Redis.Cache.RedisCacheOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddRedisDistributedCache(Microsoft.Extensions.Configuration.IConfiguration! configuration) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddRedisHealthCheck(Microsoft.Extensions.Configuration.IConfiguration! configuration, string! name = "redis", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus failureStatus = Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, System.Collections.Generic.IEnumerable<string!>? tags = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddRedisPubSub(Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<Snail.Toolkit.Redis.PubSub.RedisPubSubOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.extension(Microsoft.Extensions.DependencyInjection.IServiceCollection!).AddRedisStreams(Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<Snail.Toolkit.Redis.Streams.RedisStreamOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+Snail.Toolkit.Redis.PubSub.IRedisPubSub
+Snail.Toolkit.Redis.PubSub.IRedisPubSub.PublishAsync<T>(string! channel, T message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<long>!
+Snail.Toolkit.Redis.PubSub.IRedisPubSub.StreamAsync<T>(string! channel, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<T>!
+Snail.Toolkit.Redis.PubSub.IRedisPubSub.SubscribeAsync<T>(string! channel, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Redis.PubSub.IRedisSubscription<T>!>!
+Snail.Toolkit.Redis.PubSub.IRedisPubSub.SubscribePatternAsync<T>(string! pattern, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Snail.Toolkit.Redis.PubSub.IRedisSubscription<T>!>!
+Snail.Toolkit.Redis.PubSub.IRedisSubscription<T>
+Snail.Toolkit.Redis.PubSub.IRedisSubscription<T>.Channel.get -> string!
+Snail.Toolkit.Redis.PubSub.IRedisSubscription<T>.ReadAllAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Snail.Toolkit.Redis.PubSub.RedisMessage<T>!>!
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.<Clone>$() -> Snail.Toolkit.Redis.PubSub.RedisMessage<T>!
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.Channel.get -> string!
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.Channel.init -> void
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.Deconstruct(out string! Channel, out T Message) -> void
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.Equals(Snail.Toolkit.Redis.PubSub.RedisMessage<T>? other) -> bool
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.Message.get -> T
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.Message.init -> void
+Snail.Toolkit.Redis.PubSub.RedisMessage<T>.RedisMessage(string! Channel, T Message) -> void
+Snail.Toolkit.Redis.PubSub.RedisPubSubOptions
+Snail.Toolkit.Redis.PubSub.RedisPubSubOptions.BufferCapacity.get -> int
+Snail.Toolkit.Redis.PubSub.RedisPubSubOptions.BufferCapacity.set -> void
+Snail.Toolkit.Redis.PubSub.RedisPubSubOptions.Json.get -> System.Text.Json.JsonSerializerOptions!
+Snail.Toolkit.Redis.PubSub.RedisPubSubOptions.Json.set -> void
+Snail.Toolkit.Redis.PubSub.RedisPubSubOptions.RedisPubSubOptions() -> void
+Snail.Toolkit.Redis.RedisMetrics
+Snail.Toolkit.Redis.RedisOptions
+Snail.Toolkit.Redis.RedisOptions.AbortOnConnectFail.get -> bool
+Snail.Toolkit.Redis.RedisOptions.AbortOnConnectFail.set -> void
+Snail.Toolkit.Redis.RedisOptions.Connection.get -> string!
+Snail.Toolkit.Redis.RedisOptions.Connection.set -> void
+Snail.Toolkit.Redis.RedisOptions.InstanceName.get -> string?
+Snail.Toolkit.Redis.RedisOptions.InstanceName.set -> void
+Snail.Toolkit.Redis.RedisOptions.Password.get -> string?
+Snail.Toolkit.Redis.RedisOptions.Password.set -> void
+Snail.Toolkit.Redis.RedisOptions.RedisOptions() -> void
+Snail.Toolkit.Redis.RedisOptions.ToConfigurationOptions() -> StackExchange.Redis.ConfigurationOptions!
+Snail.Toolkit.Redis.Streams.IRedisStream
+Snail.Toolkit.Redis.Streams.IRedisStream.AppendAsync<T>(string! stream, T message, int? maxLength = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<string!>!
+Snail.Toolkit.Redis.Streams.IRedisStream.ReadAsync<T>(string! stream, string? after = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>!>!
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.<Clone>$() -> Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>!
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.Deconstruct(out string! Id, out T Message) -> void
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.Equals(Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>? other) -> bool
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.Id.get -> string!
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.Id.init -> void
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.Message.get -> T
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.Message.init -> void
+Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.RedisStreamEntry(string! Id, T Message) -> void
+Snail.Toolkit.Redis.Streams.RedisStreamOptions
+Snail.Toolkit.Redis.Streams.RedisStreamOptions.Json.get -> System.Text.Json.JsonSerializerOptions!
+Snail.Toolkit.Redis.Streams.RedisStreamOptions.Json.set -> void
+Snail.Toolkit.Redis.Streams.RedisStreamOptions.PageSize.get -> int
+Snail.Toolkit.Redis.Streams.RedisStreamOptions.PageSize.set -> void
+Snail.Toolkit.Redis.Streams.RedisStreamOptions.PollInterval.get -> System.TimeSpan
+Snail.Toolkit.Redis.Streams.RedisStreamOptions.PollInterval.set -> void
+Snail.Toolkit.Redis.Streams.RedisStreamOptions.RedisStreamOptions() -> void
+const Snail.Toolkit.Redis.RedisMetrics.MeterName = "Snail.Toolkit.Redis" -> string!
+const Snail.Toolkit.Redis.RedisOptions.SectionName = "Redis" -> string!
+override Snail.Toolkit.Redis.PubSub.RedisMessage<T>.Equals(object? obj) -> bool
+override Snail.Toolkit.Redis.PubSub.RedisMessage<T>.GetHashCode() -> int
+override Snail.Toolkit.Redis.PubSub.RedisMessage<T>.ToString() -> string!
+override Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.Equals(object? obj) -> bool
+override Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.GetHashCode() -> int
+override Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.ToString() -> string!
+static Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.AddRedis(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Microsoft.Extensions.Configuration.IConfiguration! configuration) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.AddRedisCache(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<Snail.Toolkit.Redis.Cache.RedisCacheOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.AddRedisDistributedCache(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Microsoft.Extensions.Configuration.IConfiguration! configuration) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.AddRedisHealthCheck(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Microsoft.Extensions.Configuration.IConfiguration! configuration, string! name = "redis", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus failureStatus = Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy, System.Collections.Generic.IEnumerable<string!>? tags = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.AddRedisPubSub(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<Snail.Toolkit.Redis.PubSub.RedisPubSubOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Snail.Toolkit.Redis.Extensions.ServiceCollectionExtensions.AddRedisStreams(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Microsoft.Extensions.Configuration.IConfiguration! configuration, System.Action<Snail.Toolkit.Redis.Streams.RedisStreamOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Snail.Toolkit.Redis.PubSub.RedisMessage<T>.operator !=(Snail.Toolkit.Redis.PubSub.RedisMessage<T>? left, Snail.Toolkit.Redis.PubSub.RedisMessage<T>? right) -> bool
+static Snail.Toolkit.Redis.PubSub.RedisMessage<T>.operator ==(Snail.Toolkit.Redis.PubSub.RedisMessage<T>? left, Snail.Toolkit.Redis.PubSub.RedisMessage<T>? right) -> bool
+static Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.operator !=(Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>? left, Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>? right) -> bool
+static Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>.operator ==(Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>? left, Snail.Toolkit.Redis.Streams.RedisStreamEntry<T>? right) -> bool

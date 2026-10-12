@@ -29,6 +29,7 @@ public sealed class RedisOptions
             options.Password = Password;
 
         options.AbortOnConnectFail = AbortOnConnectFail;
+
         return options;
     }
 }

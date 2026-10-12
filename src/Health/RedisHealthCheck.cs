@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using StackExchange.Redis;
 
 namespace Snail.Toolkit.Redis.Health;
 

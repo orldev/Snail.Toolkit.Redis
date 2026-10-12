@@ -170,7 +170,7 @@ public class RedisIntegrationTests(RedisContainerFixture fixture) : IClassFixtur
         });
 
         await WaitForSubscribersAsync(connection, channel, expected: 1);
-        cts.Cancel();
+        await cts.CancelAsync();
 
         var count = await consumer.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -320,7 +320,7 @@ public class RedisIntegrationTests(RedisContainerFixture fixture) : IClassFixtur
 
         Assert.Equal(HealthStatus.Healthy, report.Status);
         var entry = report.Entries["redis"];
-        Assert.StartsWith("PING", entry.Description);
+        Assert.StartsWith("PING", entry.Description, StringComparison.Ordinal);
         Assert.True((double)entry.Data["latencyMs"] >= 0);
     }
 

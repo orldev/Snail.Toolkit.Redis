@@ -5,7 +5,7 @@ namespace Snail.Toolkit.Redis.Tests;
 /// <summary>Marks a test that requires Docker; skipped only when no Docker daemon is reachable.</summary>
 public sealed class IntegrationFactAttribute : FactAttribute
 {
-    private static readonly Lazy<bool> DockerAvailable = new(DetectDocker);
+    private static readonly Lazy<bool> DockerAvailable = new(IsDockerRunning);
 
     public IntegrationFactAttribute()
     {
@@ -13,7 +13,7 @@ public sealed class IntegrationFactAttribute : FactAttribute
             Skip = "Docker is not available; Redis integration tests were skipped";
     }
 
-    private static bool DetectDocker()
+    private static bool IsDockerRunning()
     {
         try
         {

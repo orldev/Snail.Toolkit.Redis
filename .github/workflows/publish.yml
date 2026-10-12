@@ -1,52 +1,31 @@
-name: Release to NuGet
+name: release to NuGet
+
+# The shared library release of Snail.Sdk. A v* tag releases every package at that version; run by hand, it packs and
+# checks them and pushes only when asked to.
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to pack, such as 0.3.0 or 0.3.0-preview.1
+        required: true
+      push:
+        description: Push the packages to NuGet
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+  release:
     permissions:
-      id-token: write
       contents: read
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.x
-
-      - name: Get version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build project
-        run: dotnet build -c Release --no-restore -p:Version=${{ steps.version.outputs.version }}
-
-      - name: Run Tests
-        run: dotnet test -c Release --no-build
-
-      - name: Pack nugets
-        run: dotnet pack -c Release --no-build -p:Version=${{ steps.version.outputs.version }} --output ./artifacts
-
-      - name: NuGet login (OIDC → temp API key)
-        uses: NuGet/login@v1
-        id: login
-        with:
-          user: ${{ secrets.NUGET_USER }}
-
-      - name: Push to NuGet
-        run: dotnet nuget push "./artifacts/*.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      id-token: write
+    uses: orldev/Snail.Sdk/.github/workflows/lib-publish.yml@v1
+    with:
+      version: ${{ inputs.version }}
+      push: ${{ github.event_name == 'push' || inputs.push }}
+    secrets: inherit

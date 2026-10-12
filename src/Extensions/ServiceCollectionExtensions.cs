@@ -159,7 +159,7 @@ public static class ServiceCollectionExtensions
                 settings => Parses(settings.Connection),
                 $"'{RedisOptions.SectionName}:{nameof(RedisOptions.Connection)}' is not a valid StackExchange.Redis configuration string.")
             .Validate(
-                settings => !ParsedPassword(settings.Connection),
+                settings => !HasPassword(settings.Connection),
                 $"'{RedisOptions.SectionName}:{nameof(RedisOptions.Connection)}' must not carry a password; set '{RedisOptions.SectionName}:{nameof(RedisOptions.Password)}' instead.")
             .Validate(
                 settings => !Mentions(settings.Connection, "abortConnect"),
@@ -208,7 +208,7 @@ public static class ServiceCollectionExtensions
         }
     }
 
-    private static bool ParsedPassword(string? connection) =>
+    private static bool HasPassword(string? connection) =>
         !string.IsNullOrWhiteSpace(connection) && Parses(connection) && ConfigurationOptions.Parse(connection).Password is not null;
 
     /// <remarks>StackExchange.Redis trims the name on each side of the equals sign, so the check has to see "abortConnect = true" as well.</remarks>

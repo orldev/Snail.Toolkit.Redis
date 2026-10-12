@@ -96,7 +96,7 @@ public class RedisStreamTests(RedisContainerFixture fixture) : IClassFixture<Red
             return count;
         });
         await Task.Delay(300);
-        cts.Cancel();
+        await cts.CancelAsync();
 
         Assert.Equal(0, await reader.WaitAsync(TimeSpan.FromSeconds(10)));
     }

@@ -208,7 +208,7 @@ public class RedisCacheTests
         }, cancellationToken: leaderCancellation.Token);
         await leaderStarted.Task;
         var follower = _cache.GetAsync("key", _ => Task.FromResult<Payload?>(new Payload { Field1 = "own" }));
-        leaderCancellation.Cancel();
+        await leaderCancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => leader);
         Assert.Equal("own", (await follower)?.Field1);

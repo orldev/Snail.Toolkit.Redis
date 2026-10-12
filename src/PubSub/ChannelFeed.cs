@@ -11,13 +11,13 @@ namespace Snail.Toolkit.Redis.PubSub;
 /// finds it closed asks the registry for a fresh one, and the registry entry is removed under the same lock that
 /// closes the feed so that retry never sees the closed one again.
 /// </remarks>
-internal sealed class ChannelFeed<T> : IChannelFeed
+internal sealed class ChannelFeed<T>(RedisChannel channel, IConnectionMultiplexer connection, RedisPubSubOptions options, ILogger logger, Action<ChannelFeed<T>> closed) : IChannelFeed
 {
-    private readonly RedisChannel _channel;
-    private IConnectionMultiplexer _connection;
-    private readonly JsonSerializerOptions _json;
-    private readonly ILogger _logger;
-    private readonly Action<ChannelFeed<T>> _closed;
+    private readonly RedisChannel _channel = channel;
+    private IConnectionMultiplexer _connection = connection;
+    private readonly JsonSerializerOptions _json = options.Json;
+    private readonly ILogger _logger = logger;
+    private readonly Action<ChannelFeed<T>> _closed = closed;
     private readonly Lock _gate = new();
     private readonly HashSet<RedisSubscription<T>> _readers = [];
     private RedisSubscription<T>[] _snapshot = [];
@@ -26,17 +26,7 @@ internal sealed class ChannelFeed<T> : IChannelFeed
     private int _generation;
     private bool _isClosed;
 
-    public ChannelFeed(RedisChannel channel, IConnectionMultiplexer connection, RedisPubSubOptions options, ILogger logger, Action<ChannelFeed<T>> closed)
-    {
-        _channel = channel;
-        _connection = connection;
-        _json = options.Json;
-        _logger = logger;
-        _closed = closed;
-        Channel = channel.ToString();
-    }
-
-    public string Channel { get; }
+    public string Channel { get; } = channel.ToString();
 
     public bool TryAttach(RedisSubscription<T> reader)
     {

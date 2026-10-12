@@ -42,7 +42,7 @@ internal sealed class RedisSubscription<T> : IRedisSubscription<T>
     public async IAsyncEnumerable<RedisMessage<T>> ReadAllAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        while (await WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        while (await HasMoreAsync(cancellationToken).ConfigureAwait(false))
         {
             while (_buffer.Reader.TryRead(out var message))
                 yield return message;
@@ -63,7 +63,7 @@ internal sealed class RedisSubscription<T> : IRedisSubscription<T>
         await _feed.DetachAsync(this).ConfigureAwait(false);
     }
 
-    private async ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken)
+    private async ValueTask<bool> HasMoreAsync(CancellationToken cancellationToken)
     {
         try
         {

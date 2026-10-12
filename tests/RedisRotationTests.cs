@@ -12,14 +12,14 @@ public class RedisRotationTests(RedisContainerFixture fixture) : IClassFixture<R
     [IntegrationFact]
     public async Task PasswordRotation_AppliesToReconnects()
     {
-        var connectionString = await fixture.GetConnectionStringAsync();
-        await using var admin = await ConnectionMultiplexer.ConnectAsync(connectionString + ",allowAdmin=true");
+        var address = await fixture.GetConnectionStringAsync();
+        await using var admin = await ConnectionMultiplexer.ConnectAsync(address + ",allowAdmin=true");
         var server = admin.GetServer(admin.GetEndPoints()[0]);
         await server.ExecuteAsync("CONFIG", "SET", "requirepass", "first");
 
         var (configuration, source) = MutableConfiguration.Create(new Dictionary<string, string?>
         {
-            [$"{RedisOptions.SectionName}:Connection"] = connectionString,
+            [$"{RedisOptions.SectionName}:Connection"] = address,
             [$"{RedisOptions.SectionName}:Password"] = "first"
         });
         await using var provider = new ServiceCollection()

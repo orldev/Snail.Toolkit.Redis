@@ -1,11 +1,7 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Snail.Sdk.Library">
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
-        <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <IsAotCompatible>true</IsAotCompatible>
         <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
         <PackageId>Snail.Toolkit.Redis</PackageId>
         <PackageTags>StackExchange.Redis;Redis;cache;distributed-cache;pubsub;streaming</PackageTags>
@@ -15,8 +11,6 @@
         <RepositoryUrl>https://github.com/orldev/Snail.Toolkit.Redis</RepositoryUrl>
         <Copyright>Toolkit, 2023-2026</Copyright>
         <PackageProjectUrl>https://github.com/orldev/Snail.Toolkit.Redis</PackageProjectUrl>
-        <RepositoryType>GitHub</RepositoryType>
-        <PublishRepositoryUrl>true</PublishRepositoryUrl>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
     </PropertyGroup>
@@ -27,15 +21,16 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="Snail.Toolkit.Redis.Tests" />
+        <InternalsVisibleTo Include="Snail.Toolkit.Redis.Benchmarks" />
         <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.11" />
-        <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.11" />
-        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.11" />
-        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
-        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" />
+        <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     </ItemGroup>
 
 </Project>
