@@ -12,7 +12,7 @@
   },
 
   "msbuild-sdks": {
-    "Snail.Sdk": "0.1.0-local.15",
-    "Snail.Sdk.Library": "0.1.0-local.15"
+    "Snail.Sdk": "0.1.0-local.18",
+    "Snail.Sdk.Library": "0.1.0-local.18"
   }
 }

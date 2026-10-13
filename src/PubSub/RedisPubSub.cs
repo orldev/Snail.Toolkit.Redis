@@ -10,11 +10,15 @@ namespace Snail.Toolkit.Redis.PubSub;
 /// <summary><see cref="IRedisPubSub"/> over the shared connection with System.Text.Json payloads.</summary>
 internal sealed class RedisPubSub : IRedisPubSub
 {
+    private const int ChannelLimit = 256;
+
     private readonly IRedisConnection _connection;
     private readonly ILogger<RedisPubSub> _logger;
     private readonly RedisPubSubOptions _options;
     private readonly JsonSerializerOptions _json;
     private readonly ConcurrentDictionary<(RedisChannel Channel, Type Type), IChannelFeed> _feeds = new();
+    private readonly NameCache<RedisChannel> _channels = new(RedisChannel.Literal, ChannelLimit);
+    private HeldSubscriber? _subscriber;
 
     public RedisPubSub(IRedisConnection connection, IOptions<RedisPubSubOptions> options, ILogger<RedisPubSub> logger)
     {
@@ -26,7 +30,11 @@ internal sealed class RedisPubSub : IRedisPubSub
     }
 
     /// <inheritdoc />
-    /// <remarks>Once the connection is open the publish's own task is handed back, so no state machine is built around it.</remarks>
+    /// <remarks>
+    /// Once the connection is open the publish's own task is handed back, so no state machine is built around it. The
+    /// subscriber is kept per multiplexer: StackExchange.Redis builds a new one on every GetSubscriber. The channel's
+    /// encoded name is kept for the first 256 names, which StackExchange.Redis would otherwise encode on every publish.
+    /// </remarks>
     public Task<long> PublishAsync<T>(string channel, T message, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
@@ -39,7 +47,7 @@ internal sealed class RedisPubSub : IRedisPubSub
         if (_connection.Opened is not { } multiplexer)
             return PublishWhenConnectedAsync(channel, payload, cancellationToken);
 
-        return multiplexer.GetSubscriber().PublishAsync(RedisChannel.Literal(channel), payload);
+        return Subscriber(multiplexer).PublishAsync(_channels.For(channel), payload);
     }
 
     /// <inheritdoc />
@@ -107,7 +115,20 @@ internal sealed class RedisPubSub : IRedisPubSub
     {
         var multiplexer = await _connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
-        return await multiplexer.GetSubscriber().PublishAsync(RedisChannel.Literal(channel), payload).ConfigureAwait(false);
+        return await Subscriber(multiplexer).PublishAsync(_channels.For(channel), payload).ConfigureAwait(false);
+    }
+
+    /// <summary>The subscriber of the multiplexer; made again only when the multiplexer was replaced.</summary>
+    private ISubscriber Subscriber(IConnectionMultiplexer multiplexer)
+    {
+        if (Volatile.Read(ref _subscriber) is { } held && ReferenceEquals(held.Multiplexer, multiplexer))
+            return held.Subscriber;
+
+        var subscriber = multiplexer.GetSubscriber();
+
+        Volatile.Write(ref _subscriber, new HeldSubscriber(multiplexer, subscriber));
+
+        return subscriber;
     }
 
     private void OnReplaced(IConnectionMultiplexer multiplexer)
@@ -115,4 +136,7 @@ internal sealed class RedisPubSub : IRedisPubSub
         foreach (var feed in _feeds.Values)
             _ = feed.ReopenAsync(multiplexer);
     }
+
+    /// <summary>The subscriber publishes go through and the multiplexer it belongs to.</summary>
+    private sealed record HeldSubscriber(IConnectionMultiplexer Multiplexer, ISubscriber Subscriber);
 }

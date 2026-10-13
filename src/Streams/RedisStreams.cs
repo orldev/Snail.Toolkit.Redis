@@ -12,6 +12,7 @@ namespace Snail.Toolkit.Redis.Streams;
 /// <remarks>
 /// StackExchange.Redis multiplexes one connection and therefore never blocks on XREAD, so following a stream means
 /// reading again when something arrived. The announcement makes that immediate; the poll interval is the safety net.
+/// The announcement channel's name is kept for the first 256 streams instead of being built on every append.
 /// </remarks>
 internal sealed partial class RedisStreams(
     IRedisConnection connection,
@@ -21,10 +22,12 @@ internal sealed partial class RedisStreams(
 {
     private const string Start = "0-0";
     private const string OnlyNew = "$";
-    private static readonly RedisValue DataField = "data";
+    private const int StreamLimit = 256;
+    private static readonly RedisValue DataField = "data"u8.ToArray();
 
     private readonly RedisStreamOptions _options = options.Value;
     private readonly JsonSerializerOptions _json = JsonPayload.Prepared(options.Value.Json);
+    private readonly NameCache<string> _announcements = new(Announcements, StreamLimit);
 
     /// <inheritdoc />
     public async Task<string> AppendAsync<T>(string stream, T message, int? maxLength = null, CancellationToken cancellationToken = default)
@@ -35,17 +38,19 @@ internal sealed partial class RedisStreams(
 
         var payload = JsonPayload.Write(message, _json);
         var database = await DatabaseAsync(cancellationToken).ConfigureAwait(false);
-        var id = await database.StreamAddAsync(stream, DataField, payload, maxLength: maxLength, useApproximateMaxLength: true).ConfigureAwait(false);
-        await pubSub.PublishAsync(Announcements(stream), id.ToString(), cancellationToken).ConfigureAwait(false);
+        var added = await database.StreamAddAsync(stream, DataField, payload, maxLength: maxLength, useApproximateMaxLength: true).ConfigureAwait(false);
+        var id = added.ToString();
+        await pubSub.PublishAsync(_announcements.For(stream), id, cancellationToken).ConfigureAwait(false);
 
-        return id.ToString();
+        return id;
     }
 
     /// <inheritdoc />
     /// <remarks>
     /// "$" is accepted as the Redis idiom for "only what comes next": XREAD refuses it without BLOCK, so it is turned
     /// into the id of the last entry before the first read. Any other id is checked up front, because a malformed one
-    /// would otherwise surface as a server error from inside the follow loop.
+    /// would otherwise surface as a server error from inside the follow loop. The position stays the id as Redis handed
+    /// it over and the data field is matched as bytes, so an entry costs one string: the id it is handed out with.
     /// </remarks>
     public async IAsyncEnumerable<RedisStreamEntry<T>> ReadAsync<T>(
         string stream,
@@ -57,9 +62,9 @@ internal sealed partial class RedisStreams(
         if (after is not null && after != OnlyNew && !EntryId().IsMatch(after))
             throw new ArgumentException($"'{after}' is not a stream entry id; expected '<milliseconds>-<sequence>' or '$'.", nameof(after));
 
-        await using var announcements = await pubSub.SubscribeAsync<string>(Announcements(stream), cancellationToken).ConfigureAwait(false);
+        await using var announcements = await pubSub.SubscribeAsync<string>(_announcements.For(stream), cancellationToken).ConfigureAwait(false);
         await using var arrivals = announcements.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
-        var position = after == OnlyNew ? await LastIdAsync(stream, cancellationToken).ConfigureAwait(false) : after ?? Start;
+        RedisValue position = after == OnlyNew ? await LastIdAsync(stream, cancellationToken).ConfigureAwait(false) : after ?? Start;
         Task<bool>? arrival = null;
 
         try
@@ -73,7 +78,7 @@ internal sealed partial class RedisStreams(
                 {
                     foreach (var entry in entries)
                     {
-                        position = entry.Id.ToString();
+                        position = entry.Id;
 
                         if (Read<T>(stream, entry) is { } read)
                             yield return read;
@@ -114,12 +119,12 @@ internal sealed partial class RedisStreams(
         return multiplexer.GetDatabase();
     }
 
-    private async Task<string> LastIdAsync(string stream, CancellationToken cancellationToken)
+    private async Task<RedisValue> LastIdAsync(string stream, CancellationToken cancellationToken)
     {
         var database = await DatabaseAsync(cancellationToken).ConfigureAwait(false);
         var last = await database.StreamRangeAsync(stream, "-", "+", count: 1, messageOrder: Order.Descending).ConfigureAwait(false);
 
-        return last.Length == 0 ? Start : last[0].Id.ToString();
+        return last.Length == 0 ? Start : last[0].Id;
     }
 
     private RedisStreamEntry<T>? Read<T>(string stream, StreamEntry entry)

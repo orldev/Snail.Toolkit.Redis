@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using System.Text;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Snail.Toolkit.Redis.Cache;
@@ -42,6 +43,32 @@ public class RedisCacheTests
             Options.Create(new RedisOptions { InstanceName = "app:" }),
             Options.Create(_options),
             new Logger<RedisCache>(new LoggerFactory([new ListLoggerProvider(_logs)])));
+    }
+
+    /// <summary>The prefixed view of the database is kept per multiplexer: a replaced connection must be read through its own.</summary>
+    [Fact]
+    public async Task GetAsync_AfterTheMultiplexerWasReplaced_ReadsThroughTheNewOne()
+    {
+        var first = new Mock<IDatabase>();
+        var second = new Mock<IDatabase>();
+        RedisValue[] missing = [RedisValue.Null, RedisValue.Null, RedisValue.Null];
+        first.Setup(d => d.HashGetAsync(Key, It.IsAny<RedisValue[]>(), It.IsAny<CommandFlags>())).ReturnsAsync(missing);
+        second.Setup(d => d.HashGetAsync(Key, It.IsAny<RedisValue[]>(), It.IsAny<CommandFlags>())).ReturnsAsync(missing);
+        var connection = new Mock<IRedisConnection>();
+        connection.SetupSequence(c => c.ConnectAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Holding(first.Object))
+            .ReturnsAsync(Holding(second.Object));
+        var cache = new RedisCache(
+            connection.Object,
+            Options.Create(new RedisOptions { InstanceName = "app:" }),
+            Options.Create(new RedisCacheOptions()),
+            NullLogger<RedisCache>.Instance);
+
+        await cache.GetAsync<Payload>("key");
+        await cache.GetAsync<Payload>("key");
+
+        first.Verify(d => d.HashGetAsync(Key, It.IsAny<RedisValue[]>(), It.IsAny<CommandFlags>()), Times.Once);
+        second.Verify(d => d.HashGetAsync(Key, It.IsAny<RedisValue[]>(), It.IsAny<CommandFlags>()), Times.Once);
     }
 
     [Fact]
@@ -247,6 +274,46 @@ public class RedisCacheTests
         _batch.Verify(b => b.HashSetAsync(It.IsAny<RedisKey>(), It.IsAny<HashEntry[]>(), It.IsAny<CommandFlags>()), Times.Never);
     }
 
+    /// <summary>Every way the overload without a factory answers null makes this one build the value.</summary>
+    [Theory]
+    [InlineData("unreachable")]
+    [InlineData("unreadable")]
+    [InlineData("wrong type")]
+    [InlineData("null")]
+    public async Task GetAsync_WithFactory_WhateverReadsAsNull_RunsTheFactory(string entry)
+    {
+        var data = entry switch
+        {
+            "unreadable" => "{\"field2\":\"not a number\""u8.ToArray(),
+            "null" => "null"u8.ToArray(),
+            _ => "{}"u8.ToArray()
+        };
+        Stored(-1, -1, data);
+        Exception? failure = entry switch
+        {
+            "unreachable" => new RedisConnectionException(ConnectionFailureType.UnableToConnect, "down"),
+            "wrong type" => new RedisServerException("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            _ => null
+        };
+
+        if (failure is not null)
+            _database.Setup(d => d.HashGetAsync(Key, It.IsAny<RedisValue[]>(), It.IsAny<CommandFlags>())).ThrowsAsync(failure);
+
+        var value = await _cache.GetAsync("key", _ => Task.FromResult<Payload?>(new Payload { Field1 = "built" }));
+
+        Assert.Equal("built", value?.Field1);
+        _database.Verify(d => d.KeyDeleteAsync(Key, It.IsAny<CommandFlags>()), entry is "unreadable" or "wrong type" ? Times.Once() : Times.Never());
+        _batch.Verify(b => b.HashSetAsync(Key, It.IsAny<HashEntry[]>(), It.IsAny<CommandFlags>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetAsync_WithFactory_NullFactory_FaultsTheTask()
+    {
+        var read = _cache.GetAsync<Payload>("key", null!);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => read);
+    }
+
     [Fact]
     public async Task SetAsync_WithoutOptions_AppliesConfiguredDefaults()
     {
@@ -306,6 +373,24 @@ public class RedisCacheTests
         Assert.Contains(LogLevel.Warning, _logs);
     }
 
+    /// <summary>The batch's failure surfaces as Task.WhenAll reports it: the store's when it failed, otherwise the expiry's.</summary>
+    [Theory]
+    [InlineData(true, true, "store")]
+    [InlineData(true, false, "store")]
+    [InlineData(false, true, "expiry")]
+    public async Task SetAsync_FailedBatchWithThrowPolicy_ThrowsTheFirstFailure(bool isStoreFailing, bool isExpiryFailing, string expected)
+    {
+        _options.OnFailure = CacheFailure.Throw;
+        _batch.Setup(b => b.HashSetAsync(Key, It.IsAny<HashEntry[]>(), It.IsAny<CommandFlags>()))
+            .Returns(isStoreFailing ? Task.FromException(new RedisConnectionException(ConnectionFailureType.UnableToConnect, "store")) : Task.CompletedTask);
+        _batch.Setup(b => b.KeyExpireAsync(Key, It.IsAny<TimeSpan?>(), It.IsAny<ExpireWhen>(), It.IsAny<CommandFlags>()))
+            .Returns(isExpiryFailing ? Task.FromException<bool>(new RedisConnectionException(ConnectionFailureType.UnableToConnect, "expiry")) : Task.FromResult(true));
+
+        var failure = await Assert.ThrowsAsync<RedisConnectionException>(() => _cache.SetAsync("key", new Payload()));
+
+        Assert.Equal(expected, failure.Message);
+    }
+
     [Fact]
     public async Task RemoveAsync_DeletesThePrefixedKey()
     {
@@ -326,4 +411,12 @@ public class RedisCacheTests
     private void Stored(RedisValue absolute, RedisValue sliding, RedisValue data) =>
         _database.Setup(d => d.HashGetAsync(Key, It.IsAny<RedisValue[]>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync([absolute, sliding, data]);
+
+    private static IConnectionMultiplexer Holding(IDatabase database)
+    {
+        var multiplexer = new Mock<IConnectionMultiplexer>();
+        multiplexer.Setup(c => c.GetDatabase(It.IsAny<int>(), It.IsAny<object?>())).Returns(database);
+
+        return multiplexer.Object;
+    }
 }
