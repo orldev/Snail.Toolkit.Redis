@@ -1,4 +1,4 @@
-## Snail.Toolkit.Redis
+# Snail.Toolkit.Redis
 
 Redis extensions over `StackExchange.Redis` for .NET 10, with Microsoft-only dependencies:
 

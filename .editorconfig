@@ -1,7 +1,7 @@
-# The shared .editorconfig of every Snail library and server built on Snail.Sdk: copied byte for byte, checked by the
-# conformance check. Formatting only. The rules — which style is required, which analyzer fails the build, what a test
-# project is spared — ship in the Snail.Sdk package and change with its version, not with a copy of this file. A
-# repository not yet on Snail.Sdk keeps version 1 of this file, which carried the rules. See docs/standard.md.
+# The shared .editorconfig of every Snail library and server built on Snail.Sdk: copied whole, checked line by line by
+# the conformance check. Formatting only. The rules — which style is required, which analyzer fails the build, what a
+# test project is spared — ship in the Snail.Sdk package and change with its version, not with a copy of this file.
+# See docs/standard.md, "Code style".
 
 root = true
 
