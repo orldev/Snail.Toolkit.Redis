@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Snail.Toolkit.Redis.Extensions;
 using StackExchange.Redis;
 
@@ -9,6 +11,8 @@ namespace Snail.Toolkit.Redis.Tests;
 public class RedisConnectionTests
 {
     private const string Unreachable = "localhost:1,connectTimeout=200";
+    private const string FirstClosedPort = "127.0.0.1:1,connectTimeout=300,connectRetry=1";
+    private const string SecondClosedPort = "127.0.0.1:2,connectTimeout=300,connectRetry=1";
 
     [Fact]
     public void Reload_WithEmptyConnection_KeepsPreviousSettingsAndLogsError()
@@ -117,5 +121,66 @@ public class RedisConnectionTests
         source.Set($"{RedisOptions.SectionName}:Password", "second");
 
         Assert.Equal("second", ConfigurationOptions.Parse(connection.Configuration).Password);
+    }
+
+    /// <summary>A file provider raises the reload twice for one save; the second must find the endpoints already moved and open nothing.</summary>
+    [Fact]
+    public async Task Reload_RaisedTwiceForOneEndpointChange_ReplacesTheConnectionOnce()
+    {
+        var (configuration, source) = MutableConfiguration.Create(new Dictionary<string, string?>
+        {
+            [$"{RedisOptions.SectionName}:Connection"] = FirstClosedPort
+        });
+        using var provider = new ServiceCollection()
+            .AddLogging()
+            .AddRedis(configuration)
+            .BuildServiceProvider();
+        var connection = provider.GetRequiredService<IRedisConnection>();
+        await connection.ConnectAsync(CancellationToken.None);
+        var replacements = 0;
+        connection.Replaced += _ => Interlocked.Increment(ref replacements);
+
+        source.Set($"{RedisOptions.SectionName}:Connection", SecondClosedPort);
+        source.Set($"{RedisOptions.SectionName}:Connection", SecondClosedPort);
+        await Task.Delay(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, replacements);
+    }
+
+    /// <summary>The same endpoints listed in another order are the same servers and must not open a second connection.</summary>
+    [Fact]
+    public async Task Reload_SameEndpointsInAnotherOrder_KeepsTheConnection()
+    {
+        var (configuration, source) = MutableConfiguration.Create(new Dictionary<string, string?>
+        {
+            [$"{RedisOptions.SectionName}:Connection"] = "127.0.0.1:1,127.0.0.1:2,connectTimeout=300,connectRetry=1"
+        });
+        using var provider = new ServiceCollection()
+            .AddLogging()
+            .AddRedis(configuration)
+            .BuildServiceProvider();
+        var connection = provider.GetRequiredService<IRedisConnection>();
+        await connection.ConnectAsync(CancellationToken.None);
+        var replacements = 0;
+        connection.Replaced += _ => Interlocked.Increment(ref replacements);
+
+        source.Set($"{RedisOptions.SectionName}:Connection", "127.0.0.1:2,127.0.0.1:1,connectTimeout=300,connectRetry=1");
+        await Task.Delay(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(0, replacements);
+    }
+
+    /// <summary>The host stops while the first connect is in flight: what the connect opens after Dispose must be closed, not kept.</summary>
+    [Fact]
+    public async Task Dispose_WhileTheFirstConnectIsInFlight_KeepsNoMultiplexer()
+    {
+        var settings = new RedisOptions { Connection = FirstClosedPort };
+        var connection = new RedisConnection(Options.Create(settings), new OptionsFactory<RedisOptions>([], []), [], NullLogger<RedisConnection>.Instance);
+
+        var connecting = connection.ConnectAsync(CancellationToken.None);
+        connection.Dispose();
+
+        await Assert.ThrowsAnyAsync<ObjectDisposedException>(() => connecting);
+        Assert.Null(connection.Opened);
     }
 }

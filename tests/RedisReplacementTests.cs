@@ -7,7 +7,7 @@ using StackExchange.Redis;
 
 namespace Snail.Toolkit.Redis.Tests;
 
-/// <summary>Uses two servers: the configuration moves from the first to the second while the host runs.</summary>
+/// <summary>The configuration moves the connection to other endpoints while the host runs: to a second server, or to one that cannot be reached.</summary>
 public class RedisReplacementTests(RedisContainerFixture fixture) : IClassFixture<RedisContainerFixture>
 {
     public sealed record Message(string Text, int Number);
@@ -52,6 +52,66 @@ public class RedisReplacementTests(RedisContainerFixture fixture) : IClassFixtur
         }
     }
 
+    /// <summary>The endpoints move to a server that cannot be subscribed: the consumer's loop must fail, not end as if the stream were over.</summary>
+    [IntegrationFact]
+    public async Task StreamAsync_WhenTheReplacementCannotSubscribe_TellsTheConsumer()
+    {
+        var (configuration, source) = MutableConfiguration.Create(new Dictionary<string, string?>
+        {
+            [$"{RedisOptions.SectionName}:Connection"] = await fixture.GetConnectionStringAsync()
+        });
+        await using var provider = new ServiceCollection()
+            .AddLogging()
+            .AddRedisPubSub(configuration)
+            .BuildServiceProvider();
+        foreach (var hosted in provider.GetServices<IHostedService>())
+            await hosted.StartAsync(CancellationToken.None);
+        var pubSub = provider.GetRequiredService<IRedisPubSub>();
+        var multiplexer = provider.GetRequiredService<IConnectionMultiplexer>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var received = 0;
+        var consumer = Task.Run(async () =>
+        {
+            await foreach (var _ in pubSub.StreamAsync<Message>("moved", cts.Token))
+                received++;
+        }, cts.Token);
+        await WaitForSubscribersAsync(multiplexer, "moved", 1);
+
+        source.Set($"{RedisOptions.SectionName}:Connection", "127.0.0.1:1,connectTimeout=300,connectRetry=1");
+        var outcome = await Task.WhenAny(consumer, Task.Delay(TimeSpan.FromSeconds(15), cts.Token));
+
+        Assert.Same(consumer, outcome);
+        Assert.True(consumer.IsFaulted, "The consumer's loop ended as if the stream were over; nothing told it to subscribe again.");
+    }
+
+    /// <summary>Once the subscription moved, none may stay on the old server, or a message published to both reaches every reader twice.</summary>
+    [IntegrationFact]
+    public async Task SubscribeAsync_AfterTheEndpointsMoved_LeavesNoSubscriptionOnTheOldServer()
+    {
+        var first = await fixture.GetConnectionStringAsync();
+        var second = await fixture.StartAnotherAsync();
+        var (configuration, source) = MutableConfiguration.Create(new Dictionary<string, string?>
+        {
+            [$"{RedisOptions.SectionName}:Connection"] = first
+        });
+        await using var provider = new ServiceCollection()
+            .AddLogging()
+            .AddRedisPubSub(configuration)
+            .BuildServiceProvider();
+        foreach (var hosted in provider.GetServices<IHostedService>())
+            await hosted.StartAsync(CancellationToken.None);
+        var pubSub = provider.GetRequiredService<IRedisPubSub>();
+        await using var subscription = await pubSub.SubscribeAsync<Message>("moving", CancellationToken.None);
+        await using var oldServer = await ConnectionMultiplexer.ConnectAsync(first);
+        await using var newServer = await ConnectionMultiplexer.ConnectAsync(second);
+        await WaitForSubscribersAsync(oldServer, "moving", 1);
+
+        source.Set($"{RedisOptions.SectionName}:Connection", second);
+        await WaitForSubscribersAsync(newServer, "moving", 1);
+
+        await WaitForSubscribersAsync(oldServer, "moving", 0, TimeSpan.FromSeconds(2));
+    }
+
     private static long SubscriberCount(IConnectionMultiplexer connection, string channel)
     {
         var server = connection.GetServer(connection.GetEndPoints()[0]);
@@ -71,5 +131,22 @@ public class RedisReplacementTests(RedisContainerFixture fixture) : IClassFixtur
 
             await Task.Delay(100);
         }
+    }
+
+    private static async Task WaitForSubscribersAsync(IConnectionMultiplexer connection, string channel, int expected, TimeSpan? within = null)
+    {
+        var server = connection.GetServer(connection.GetEndPoints()[0]);
+        var deadline = DateTime.UtcNow + (within ?? TimeSpan.FromSeconds(10));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            var result = (RedisResult[])(await server.ExecuteAsync("PUBSUB", "NUMSUB", channel))!;
+            if ((long)result[1] == expected)
+                return;
+
+            await Task.Delay(50);
+        }
+
+        throw new TimeoutException($"Channel '{channel}' did not reach {expected} subscriber(s) in time.");
     }
 }

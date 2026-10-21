@@ -6,6 +6,6 @@ public interface IRedisSubscription<T> : IAsyncDisposable
     /// <summary>The literal channel or the glob pattern this subscription listens to.</summary>
     string Channel { get; }
 
-    /// <summary>Yields messages as they arrive; completes when the token is cancelled or the subscription is disposed.</summary>
+    /// <summary>Yields messages as they arrive; completes when the token is cancelled or the subscription is disposed, and fails when the subscription could not be kept on a replaced connection.</summary>
     IAsyncEnumerable<RedisMessage<T>> ReadAllAsync(CancellationToken cancellationToken = default);
 }

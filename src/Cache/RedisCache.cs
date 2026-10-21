@@ -55,14 +55,14 @@ internal sealed class RedisCache(
             database = Database(await connection.ConnectAsync(cancellationToken).ConfigureAwait(false));
             fields = await database.HashGetAsync(key, Fields).ConfigureAwait(false);
         }
+        catch (RedisServerException exception) when (IsWrongType(exception))
+        {
+            await WrongTypeAsync<T>(exception, key, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
         catch (Exception exception) when (Misses(exception))
         {
             ReportUnavailable(exception, key);
-            return null;
-        }
-        catch (RedisServerException exception) when (IsWrongType(exception))
-        {
-            await EvictAsync<T>(exception, key, cancellationToken).ConfigureAwait(false);
             return null;
         }
 
@@ -104,14 +104,14 @@ internal sealed class RedisCache(
             database = Database(await connection.ConnectAsync(cancellationToken).ConfigureAwait(false));
             fields = await database.HashGetAsync(key, Fields).ConfigureAwait(false);
         }
+        catch (RedisServerException exception) when (IsWrongType(exception))
+        {
+            await WrongTypeAsync<T>(exception, key, cancellationToken).ConfigureAwait(false);
+            return await LoadOnceAsync(key, factory, options, cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception exception) when (Misses(exception))
         {
             ReportUnavailable(exception, key);
-            return await LoadOnceAsync(key, factory, options, cancellationToken).ConfigureAwait(false);
-        }
-        catch (RedisServerException exception) when (IsWrongType(exception))
-        {
-            await EvictAsync<T>(exception, key, cancellationToken).ConfigureAwait(false);
             return await LoadOnceAsync(key, factory, options, cancellationToken).ConfigureAwait(false);
         }
 
@@ -153,7 +153,7 @@ internal sealed class RedisCache(
         var timeToLive = TimeToLive(absolute, sliding, now);
         HashEntry[] entry =
         [
-            new(AbsoluteField, absolute?.Ticks ?? None),
+            new(AbsoluteField, absolute?.UtcTicks ?? None),
             new(SlidingField, sliding?.Ticks ?? None),
             new(DataField, payload)
         ];
@@ -217,12 +217,16 @@ internal sealed class RedisCache(
         return keyed;
     }
 
-    /// <remarks>A value of another type under the cache's own prefix is somebody else's mistake; it is evicted like any entry the cache cannot read.</remarks>
     private static bool IsWrongType(RedisServerException exception) =>
         exception.Message.StartsWith("WRONGTYPE", StringComparison.Ordinal);
 
+    /// <remarks>
+    /// Whatever Redis failed to answer or answered with a refusal — unreachable, timed out, full, loading its dataset,
+    /// a read-only replica — is the same fact to a caller under the miss policy: the cache is not there right now.
+    /// The timeout is named on its own because StackExchange.Redis derives it from TimeoutException, not RedisException.
+    /// </remarks>
     private bool Misses(Exception exception) =>
-        exception is RedisConnectionException or RedisTimeoutException && _options.OnFailure is CacheFailure.Miss;
+        exception is RedisException or RedisTimeoutException && _options.OnFailure is CacheFailure.Miss;
 
     private (DateTimeOffset? Absolute, TimeSpan? Sliding) Expiry(DistributedCacheEntryOptions? options, DateTimeOffset now)
     {
@@ -274,20 +278,46 @@ internal sealed class RedisCache(
         return (byte[])fields[2]!;
     }
 
+    /// <remarks>A payload that is the JSON literal null reads back as a miss and is counted as one, so the hit ratio says what callers got.</remarks>
     private T? Hit<T>(byte[] payload)
     {
         var value = JsonPayload.Read<T>(payload, _json);
-        RedisMetrics.CacheHits.Add(1);
+        var counter = value is null ? RedisMetrics.CacheMisses : RedisMetrics.CacheHits;
+        counter.Add(1);
 
         return value;
     }
 
-    private Task EvictAsync<T>(Exception exception, string key, CancellationToken cancellationToken)
+    /// <remarks>
+    /// A value of another type under the cache's own prefix is somebody else's mistake and is evicted like any entry
+    /// the cache cannot read. Without a prefix the cache has no keyspace of its own, and the key is left alone: it may
+    /// be anybody's.
+    /// </remarks>
+    private Task WrongTypeAsync<T>(RedisServerException exception, string key, CancellationToken cancellationToken)
+    {
+        if (_prefix.Length > 0)
+            return EvictAsync<T>(exception, key, cancellationToken);
+
+        RedisMetrics.CacheMisses.Add(1);
+        logger.LeftForeignEntry(exception, key, typeof(T).Name);
+
+        return Task.CompletedTask;
+    }
+
+    /// <remarks>The eviction is a write like any other: under the miss policy its failure is reported, not thrown, since the caller already has its miss.</remarks>
+    private async Task EvictAsync<T>(Exception exception, string key, CancellationToken cancellationToken)
     {
         RedisMetrics.CacheMisses.Add(1);
         logger.EvictedUnreadableEntry(exception, key, typeof(T).Name);
 
-        return RemoveAsync(key, cancellationToken);
+        try
+        {
+            await RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (Misses(failure))
+        {
+            ReportUnavailable(failure, key);
+        }
     }
 
     private async Task RemoveWhenConnectedAsync(string key, CancellationToken cancellationToken)

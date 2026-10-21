@@ -36,7 +36,8 @@ internal sealed class RedisSubscription<T> : IRedisSubscription<T>
 
     public void Offer(RedisMessage<T> message) => _buffer.Writer.TryWrite(message);
 
-    public void Complete() => _buffer.Writer.TryComplete();
+    /// <summary>Ends the stream with the failure that ended the subscription, so a reader learns it has to subscribe again.</summary>
+    public void Fail(Exception exception) => _buffer.Writer.TryComplete(exception);
 
     /// <inheritdoc />
     public async IAsyncEnumerable<RedisMessage<T>> ReadAllAsync(

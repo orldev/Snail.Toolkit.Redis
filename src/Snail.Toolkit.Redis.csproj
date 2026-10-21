@@ -7,7 +7,7 @@
         <PackageTags>StackExchange.Redis;Redis;cache;distributed-cache;pubsub;streaming</PackageTags>
         <Title>Snail.Toolkit.Redis</Title>
         <Authors>orldev</Authors>
-        <Description>Redis extensions over StackExchange.Redis: one shared IConnectionMultiplexer, ICacheService (System.Text.Json distributed cache with fallback factory) and IRedisPubSub (typed publish and IAsyncEnumerable subscription).</Description>
+        <Description>Redis extensions over StackExchange.Redis: one shared IConnectionMultiplexer, IRedisCache (System.Text.Json cache with a fallback factory), IRedisPubSub (typed publish and IAsyncEnumerable subscriptions) and IRedisStream (append-only history a late reader catches up on).</Description>
         <RepositoryUrl>https://github.com/orldev/Snail.Toolkit.Redis</RepositoryUrl>
         <Copyright>Toolkit, 2023-2026</Copyright>
         <PackageProjectUrl>https://github.com/orldev/Snail.Toolkit.Redis</PackageProjectUrl>

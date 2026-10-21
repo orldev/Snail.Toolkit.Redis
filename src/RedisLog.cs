@@ -52,4 +52,13 @@ internal static partial class RedisLog
 
     [LoggerMessage(13, LogLevel.Warning, "Redis server {EndPoint} reported: {Message}")]
     public static partial void ServerError(this ILogger logger, string? endPoint, string message);
+
+    [LoggerMessage(17, LogLevel.Warning, "Left the key {Key} alone: it holds another type than an entry for {Type}, and without an instance name the cache cannot call it its own")]
+    public static partial void LeftForeignEntry(this ILogger logger, Exception exception, string key, string type);
+
+    [LoggerMessage(18, LogLevel.Warning, "Reading stream {Stream} after {Position} failed; the follower reads again after the next wake-up")]
+    public static partial void StreamReadFailed(this ILogger logger, Exception exception, string stream, string position);
+
+    [LoggerMessage(19, LogLevel.Warning, "The entry {Id} of stream {Stream} was appended but could not be announced; followers pick it up at their next poll")]
+    public static partial void AnnouncementFailed(this ILogger logger, Exception exception, string stream, string id);
 }

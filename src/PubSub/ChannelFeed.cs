@@ -9,7 +9,9 @@ namespace Snail.Toolkit.Redis.PubSub;
 /// A reader per consumer used to mean a Redis subscription and a JSON parse per consumer, so a task channel watched
 /// by many pages paid for each of them. The feed closes and unsubscribes when its last reader detaches; a reader that
 /// finds it closed asks the registry for a fresh one, and the registry entry is removed under the same lock that
-/// closes the feed so that retry never sees the closed one again.
+/// closes the feed so that retry never sees the closed one again. A subscription that cannot be opened, or opened
+/// again on a replacement connection, ends every reader with that failure: a reader that ended quietly would look
+/// like a stream that was over, and nobody would subscribe again.
 /// </remarks>
 internal sealed class ChannelFeed<T>(RedisChannel channel, IConnectionMultiplexer connection, RedisPubSubOptions options, ILogger logger, Action<ChannelFeed<T>> closed) : IChannelFeed
 {
@@ -52,7 +54,12 @@ internal sealed class ChannelFeed<T>(RedisChannel channel, IConnectionMultiplexe
     }
 
     /// <summary>Subscribes again on the replacement connection; readers keep their buffers and miss only what was published in between.</summary>
-    /// <remarks>Each open carries a generation: an older open that completes after a newer one releases its queue instead of recording it.</remarks>
+    /// <remarks>
+    /// Each open carries a generation: an older open that completes after a newer one releases its queue instead of
+    /// recording it. The queue on the previous connection is released as soon as the new one is current, rather than
+    /// when that connection is disposed: until then a message published to both servers would reach every reader twice.
+    /// The release runs on its own, so a new reader never waits for a server that is going away.
+    /// </remarks>
     public async Task ReopenAsync(IConnectionMultiplexer connection)
     {
         Task opening;
@@ -101,7 +108,7 @@ internal sealed class ChannelFeed<T>(RedisChannel channel, IConnectionMultiplexe
         {
             queue = await _connection.GetSubscriber().SubscribeAsync(_channel).ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
             RedisSubscription<T>[] readers;
 
@@ -113,12 +120,13 @@ internal sealed class ChannelFeed<T>(RedisChannel channel, IConnectionMultiplexe
             }
 
             foreach (var reader in readers)
-                reader.Complete();
+                reader.Fail(exception);
 
             throw;
         }
 
         bool isCurrent;
+        ChannelMessageQueue? replaced = null;
 
         lock (_gate)
         {
@@ -127,12 +135,19 @@ internal sealed class ChannelFeed<T>(RedisChannel channel, IConnectionMultiplexe
             if (isCurrent)
             {
                 queue.OnMessage(OnMessage);
+                replaced = _queue;
                 _queue = queue;
             }
         }
 
         if (!isCurrent)
+        {
             await ReleaseAsync(queue).ConfigureAwait(false);
+            return;
+        }
+
+        if (replaced is not null)
+            _ = ReleaseAsync(replaced);
     }
 
     private async Task ReleaseAsync(ChannelMessageQueue queue)
@@ -141,7 +156,7 @@ internal sealed class ChannelFeed<T>(RedisChannel channel, IConnectionMultiplexe
         {
             await queue.UnsubscribeAsync().ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is ObjectDisposedException or RedisException)
+        catch (Exception exception) when (exception is ObjectDisposedException or RedisException or RedisTimeoutException)
         {
             _logger.ReleasedAfterClose(exception, Channel);
         }

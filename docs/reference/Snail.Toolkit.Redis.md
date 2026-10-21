@@ -34,7 +34,7 @@ What a read or write does when Redis cannot be reached.
 
 | Member | Summary |
 | --- | --- |
-| `const CacheFailure Miss` | A read reports a miss and a write is skipped; the first failure and then one per minute are logged. |
+| `const CacheFailure Miss` | A read reports a miss and a write is skipped, whether Redis could not be reached or refused the command; the first failure and then one per minute are logged. |
 | `const CacheFailure Throw` | The connection error propagates to the caller. |
 
 ### interface IRedisCache
@@ -94,7 +94,7 @@ An active Redis subscription; disposing it unsubscribes and completes the messag
 
 | Member | Summary |
 | --- | --- |
-| `IAsyncEnumerable<RedisMessage<T>> ReadAllAsync(CancellationToken cancellationToken = default)` | Yields messages as they arrive; completes when the token is cancelled or the subscription is disposed. |
+| `IAsyncEnumerable<RedisMessage<T>> ReadAllAsync(CancellationToken cancellationToken = default)` | Yields messages as they arrive; completes when the token is cancelled or the subscription is disposed, and fails when the subscription could not be kept on a replaced connection. |
 | `string Channel { get; }` | The literal channel or the glob pattern this subscription listens to. |
 
 ### class RedisMessage<T>

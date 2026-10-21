@@ -69,7 +69,7 @@ var config = await cache.GetAsync(
 
 Without options an entry lives 10 minutes absolute with a 2 minute sliding window. Concurrent misses of one key inside the process share a single factory call. An entry that no longer deserializes is evicted and reported as a miss. Storing `null` throws: null is the miss marker.
 
-When Redis is unreachable a read reports a miss and a write is skipped, with one warning per minute, so the host keeps serving from the factory; `RedisCacheOptions.OnFailure = CacheFailure.Throw` propagates the error instead. A failed `RemoveAsync` always throws, because stale data left behind is something the caller has to know.
+When Redis is unreachable, or refuses the command because it is full, loading its dataset or a read-only replica, a read reports a miss and a write is skipped, with one warning per minute, so the host keeps serving from the factory; `RedisCacheOptions.OnFailure = CacheFailure.Throw` propagates the error instead. A failed `RemoveAsync` always throws, because stale data left behind is something the caller has to know.
 
 ```c#
 builder.Services.AddRedisCache(builder.Configuration, options =>
@@ -137,7 +137,7 @@ await foreach (var entry in stream.ReadAsync<Delta>($"task:{taskId}", after: las
     lastSeenId = entry.Id;
 ```
 
-Every append is announced over pub/sub, so a follower wakes at once; `RedisStreamOptions.PollInterval` (one second) only covers a lost announcement, and `PageSize` (100) bounds a catch-up round trip.
+Every append is announced over pub/sub, so a follower wakes at once; `RedisStreamOptions.PollInterval` (one second) covers a lost announcement and a read that failed while the connection was being restored, and `PageSize` (100) bounds a catch-up round trip. A follower runs until its token is cancelled; leaving the loop early releases it at once.
 
 ### Health check
 
@@ -149,9 +149,11 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c
 
 ### Password rotation and endpoint changes
 
-`RedisOptions` is bound with change tracking. When the configuration reloads with a new `Password` (for example from a Vault provider), the running connection keeps its authenticated sockets and every later reconnect uses the new password. When it reloads with a new `Connection`, a connection to the new endpoints is opened; the cache, pub/sub subscriptions, streams and the health check move to it, and the previous connection is disposed a few seconds later. A reload the library cannot validate is logged at `Error` and ignored.
+`RedisOptions` is bound with change tracking. When the configuration reloads with a new `Password` (for example from a Vault provider), the running connection keeps its authenticated sockets and every later reconnect uses the new password. When it reloads with a new `Connection`, a connection to the new endpoints is opened; the cache, pub/sub subscriptions, streams and the health check move to it, and the previous connection is disposed a few seconds later. The same servers listed in another order are not a change. A reload the library cannot validate is logged at `Error` and ignored.
 
-The `IConnectionMultiplexer` a consumer resolved itself is a singleton and stays on the endpoints it was opened with.
+A subscription that cannot be moved to the new connection ends its reader with that error instead of completing it, so a consumer's `await foreach` throws and can subscribe again.
+
+The `IConnectionMultiplexer` a consumer resolved itself is a singleton and stays on the endpoints it was opened with, and so does the connection of `AddRedisDistributedCache`.
 
 ### Reusing the connection
 
