@@ -141,7 +141,11 @@ Every append is announced over pub/sub, so a follower wakes at once; `RedisStrea
 
 ### Health check
 
-`AddRedisHealthCheck(configuration, name: "redis", failureStatus: HealthStatus.Unhealthy, tags: null)` registers a check that PINGs the shared connection and reports the latency in `Data["latencyMs"]`. The name is registered once even when the call is repeated. Expose it as usual:
+`AddRedisHealthCheck(configuration, name: "redis", failureStatus: HealthStatus.Unhealthy, tags: null)` registers a check that PINGs the shared connection and reports the latency in `Data["latencyMs"]`. The name is registered once even when the call is repeated.
+
+Against a cluster a PING to one node says nothing about the keys that live on another, so the check PINGs every primary that owns slots and is healthy only when all 16 384 hash slots are served by a primary that answers. Otherwise it reports `failureStatus` with `Data["unservedSlots"]` and `Data["unreachablePrimaries"]`: a primary that announces an address the application cannot reach (NAT, a container's internal IP) fails every key of its slots while the other nodes still answer. The map is the one the client routes keys by, so the check needs no admin mode.
+
+Expose it as usual:
 
 ```c#
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
